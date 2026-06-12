@@ -1,5 +1,6 @@
 # Binaries and build output
 /bin/
+/release/
 *.exe
 *.test
 *.out
