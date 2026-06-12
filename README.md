@@ -262,22 +262,6 @@ Notable design choices:
 
 ---
 
-## Regenerate protobuf code (rare)
-
-The generated `*.pb.go` is committed. You only need this if you change `proto/gpmc/v1/messages.proto`:
-
-```bash
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-protoc --go_out=. --go_opt=paths=source_relative \
-       --go_opt=default_api_level=API_OPAQUE \
-       proto/gpmc/v1/messages.proto
-mv proto/gpmc/v1/messages.pb.go pkg/gpmc/gpmcpb/messages.pb.go
-```
-
-`protoc` itself: `scoop install protobuf` (Windows), `brew install protobuf` (macOS), `apt install protobuf-compiler` (Linux).
-
----
-
 ## Trust model
 
 - **Your photos stay in your Google account.** If you stop using gpix tomorrow, everything is still there in the regular Google Photos app/web.
