@@ -1,51 +1,56 @@
 {{define "browse"}}{{template "layout" .}}{{end}}
 {{define "title"}}Library · gpix{{end}}
 {{define "bodyclass"}}page-library{{end}}
+{{define "pagetitle"}}Media library{{end}}
+{{define "pagesub"}}{{end}}
+{{define "headeractions"}}
+{{if .Items}}<button class="btn btn-sm" type="button" id="select-toggle" aria-pressed="false">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+  <span data-select-label>Select</span>
+</button>{{end}}
+{{if .NextCursor}}<a class="btn btn-sm" href="/browse?cursor={{.NextCursor}}">
+  <span>Next</span>
+  <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+</a>{{end}}
+<a class="btn btn-primary btn-sm" href="/upload">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12"/><polyline points="6 10 12 4 18 10"/><path d="M4 20h16"/></svg>
+  <span>Upload</span>
+</a>
+{{end}}
 {{define "content"}}
-<section class="page-heading">
-  <div>
-    <span class="eyebrow">Your collection</span>
-    <h1>Media library</h1>
-    <p>Browse photos, videos, and disguised files stored on this server.</p>
-  </div>
-  {{if .NextCursor}}
-  <div class="page-actions">
-    <a class="btn" href="/browse?cursor={{.NextCursor}}">
-      <span>Next page</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
-    </a>
-  </div>
-  {{end}}
-</section>
 {{if not .Items}}
 <section class="empty-state">
   <div class="empty-icon" aria-hidden="true">
-    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/></svg>
   </div>
   <h2>Your library is empty</h2>
-  <p>Upload photos or videos to start building your collection.</p>
-  <a class="btn btn-primary" href="/upload">Upload media</a>
+  <p>Upload photos or videos to start building your collection. Disguised file types are supported too.</p>
+  <a class="btn btn-primary btn-large" href="/upload">Upload media</a>
 </section>
 {{else}}
 <section class="media-grid" aria-label="Media library">
   {{range .Items}}
-  <a class="media-card{{if .IsDisguised}} media-card-file{{end}}" href="/view/{{.MediaKey}}" title="{{.DisplayName}}">
+  <a class="media-card{{if .IsDisguised}} media-card-file{{end}}" href="/view/{{.MediaKey}}" title="{{.DisplayName}}" data-key="{{.MediaKey}}">
+    <input type="checkbox" class="card-select" hidden aria-label="Select {{.DisplayName}}">
+    <span class="card-check" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+    </span>
     <div class="media-card-thumb">
       {{if .IsDisguised}}
       <div class="file-thumb">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         <span class="file-ext">{{fileExt .DisplayName}}</span>
       </div>
-      <span class="media-type media-type-file">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-        {{.DisplayKind}}
-      </span>
+      <span class="media-type media-type-file">{{.DisplayKind}}</span>
       {{else}}
       <img loading="lazy" src="/thumb/{{.MediaKey}}?size=512" alt="{{.DisplayName}}">
       {{if eq .Kind 2}}
       <span class="media-type">
         <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         Video
+      </span>
+      <span class="media-play-overlay" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
       </span>
       {{end}}
       {{end}}
@@ -61,5 +66,22 @@
   </a>
   {{end}}
 </section>
+<div class="action-bar" id="action-bar" hidden role="toolbar" aria-label="Bulk actions"
+     data-cursor="{{.NextCursor}}">
+  <span class="action-bar-count"><strong data-sel-count>0</strong> selected</span>
+  <span class="action-bar-status" data-bar-status hidden></span>
+  <div class="action-bar-actions">
+    <button class="btn btn-sm btn-ghost" type="button" data-action="select-all">All</button>
+    <button class="btn btn-sm" type="button" data-action="download">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M5 21h14"/></svg>
+      <span>.zip</span>
+    </button>
+    <button class="btn btn-sm btn-danger" type="button" data-action="delete">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+      <span>Delete</span>
+    </button>
+    <button class="btn btn-sm btn-ghost" type="button" data-action="clear">Cancel</button>
+  </div>
+</div>
 {{end}}
 {{end}}

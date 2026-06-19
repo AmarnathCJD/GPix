@@ -7,12 +7,12 @@ import (
 )
 
 type HLSVariant struct {
-	Index      int
-	Bandwidth  int
-	Width      int
-	Height     int
-	FrameRate  string
-	Codecs     string
+	Index       int
+	Bandwidth   int
+	Width       int
+	Height      int
+	FrameRate   string
+	Codecs      string
 	PlaylistURL string
 }
 
@@ -49,12 +49,12 @@ func ParseMasterPlaylist(s string) []HLSVariant {
 
 func parseAttrs(s string, v *HLSVariant) {
 	for _, attr := range splitAttrs(s) {
-		eq := strings.IndexByte(attr, '=')
-		if eq < 0 {
+		before, after, ok := strings.Cut(attr, "=")
+		if !ok {
 			continue
 		}
-		k := strings.TrimSpace(attr[:eq])
-		val := strings.Trim(strings.TrimSpace(attr[eq+1:]), `"`)
+		k := strings.TrimSpace(before)
+		val := strings.Trim(strings.TrimSpace(after), `"`)
 		switch k {
 		case "BANDWIDTH":
 			v.Bandwidth, _ = strconv.Atoi(val)

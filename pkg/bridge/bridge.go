@@ -19,6 +19,7 @@ type Bot struct {
 	log     *slog.Logger
 	ctx     context.Context
 	tempDir string
+	queue   *uploadQueue
 }
 
 func New(cfg Config, gp *gpmc.Client, log *slog.Logger) (*Bot, error) {
@@ -61,13 +62,18 @@ func New(cfg Config, gp *gpmc.Client, log *slog.Logger) (*Bot, error) {
 		xfer:    NewTransfer(cfg.TempDir, cfg.MaxConcurrent),
 		log:     log,
 		tempDir: cfg.TempDir,
+		queue:   &uploadQueue{},
 	}
 
 	tg.On("message:/upload", b.wrap(b.handleUpload))
+	tg.On("message:/uploadall", b.wrap(b.handleUploadAll))
+	tg.On("message:/queue", b.wrap(b.handleQueue))
+	tg.On("message:/clearqueue", b.wrap(b.handleClearQueue))
 	tg.On("message:/get", b.wrap(b.handleGet))
 	tg.On("message:/list", b.wrap(b.handleList))
 	tg.On("message:/info", b.wrap(b.handleInfo))
 	tg.On("message:/start", b.wrap(b.handleInfo))
+	tg.On(telegram.OnMessage, b.wrap(b.handleCatchMedia))
 
 	return b, nil
 }

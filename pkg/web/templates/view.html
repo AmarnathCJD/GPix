@@ -2,11 +2,14 @@
 {{define "title"}}{{.Filename}} · gpix{{end}}
 {{define "bodyclass"}}page-view{{end}}
 {{define "head"}}{{if .IsVideo}}<link rel="stylesheet" href="/static/plyr.css">{{end}}{{end}}
-{{define "content"}}
-<a class="back-link" href="/browse">
+{{define "pagetitle"}}{{if .IsDisguised}}{{.OriginalName}}{{else}}{{.Filename}}{{end}}{{end}}
+{{define "headeractions"}}
+<a class="btn btn-sm btn-ghost" href="/browse">
   <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-  Library
+  <span>Library</span>
 </a>
+{{end}}
+{{define "content"}}
 <div class="detail-layout">
   <div class="media-column">
     <section class="media-stage" aria-label="Media preview">
@@ -64,7 +67,7 @@
     </div>
     <div class="detail-actions">
       <a class="btn btn-primary btn-large" href="/raw/{{.RawToken}}" download="{{if .IsDisguised}}{{.OriginalName}}{{else}}{{.Filename}}{{end}}">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12"/><polyline points="6 10 12 16 18 10"/><path d="M4 20h16"/></svg>
         Download
       </a>
       <button class="btn btn-danger btn-large" id="delete-btn" data-key="{{.MediaKey}}" type="button">

@@ -21,6 +21,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /upload", s.requireSession(s.handleUploadForm))
 	mux.HandleFunc("POST /upload", s.requireSession(s.handleUploadSubmit))
 	mux.HandleFunc("POST /delete/{key}", s.requireSession(s.handleDelete))
+	mux.HandleFunc("POST /api/bulk/delete", s.requireSession(s.handleBulkDelete))
+	mux.HandleFunc("GET /api/bulk/download", s.requireSession(s.handleBulkDownload))
 	mux.HandleFunc("GET /api/upload-progress/{id}", s.requireSession(s.handleProgressSSE))
 
 	mux.HandleFunc("GET /stream/{token}", s.handleStream)
@@ -28,6 +30,10 @@ func (s *Server) routes() http.Handler {
 
 	sub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(sub)))
+
+	for prefix, h := range s.extraMounts {
+		mux.Handle(prefix, h)
+	}
 
 	return s.recoverPanic(s.logRequest(s.securityHeaders(mux)))
 }

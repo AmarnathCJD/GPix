@@ -1,13 +1,14 @@
 {{define "error"}}{{template "layout" .}}{{end}}
 {{define "title"}}Error · gpix{{end}}
 {{define "bodyclass"}}page-error{{end}}
+{{define "pagetitle"}}{{if .Title}}{{.Title}}{{else}}Something went wrong{{end}}{{end}}
 {{define "content"}}
 <section class="error-page">
   <div class="error-icon" aria-hidden="true">!</div>
   <span class="eyebrow">Something went wrong</span>
   <h1>{{.Title}}</h1>
   <p>{{.Message}}</p>
-  <a class="btn" href="/browse">
+  <a class="btn btn-primary" href="/browse">
     <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
     Back to library
   </a>

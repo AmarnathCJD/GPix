@@ -1,50 +1,113 @@
 {{define "upload"}}{{template "layout" .}}{{end}}
 {{define "title"}}Upload · gpix{{end}}
 {{define "bodyclass"}}page-upload{{end}}
+{{define "pagetitle"}}Upload media{{end}}
+{{define "headeractions"}}
+<a class="btn btn-sm btn-ghost" href="/browse">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+  <span>Library</span>
+</a>
+{{end}}
 {{define "content"}}
 <section class="page-heading">
   <div>
     <span class="eyebrow">Add to library</span>
     <h1>Upload media</h1>
-    <p>Select photos, videos, or any other file. Non-media files are automatically disguised for storage.</p>
+    <p>Photos, videos, and any other file. Non-media files are automatically disguised as MP4 for storage; tick "Encrypt" to add AES-256-GCM on top.</p>
   </div>
 </section>
-<section class="panel upload-panel">
-  <form id="upload-form" method="POST" action="/upload" enctype="multipart/form-data">
-    <input type="hidden" name="_csrf" value="{{.CSRF}}">
-    <label class="drop-zone" for="upload-files">
-      <span class="drop-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-      </span>
-      <strong>Drop files here</strong>
-      <span>or click to browse from your device</span>
-      <span class="file-summary" id="file-summary" aria-live="polite">Multiple files supported · 5 GB max</span>
-      <input id="upload-files" type="file" name="files" multiple required>
-    </label>
-    <div class="upload-options">
-      <label class="field">
-        <span>Upload quality</span>
-        <select class="input" name="quality">
-          <option value="original">Original quality</option>
-          <option value="saver">Storage saver</option>
-          <option value="quota">Use quota</option>
-        </select>
+<div class="upload-layout">
+  <section class="panel upload-panel">
+    <form id="upload-form" method="POST" action="/upload" enctype="multipart/form-data">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <input type="hidden" name="quality" id="quality-mirror" value="original">
+      <input type="hidden" name="encrypt" id="encrypt-mirror" value="">
+      <input type="hidden" name="passphrase" id="passphrase-mirror" value="">
+      <label class="drop-zone" for="upload-files">
+        <span class="drop-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 4v12"/><polyline points="6 10 12 4 18 10"/><path d="M4 20h16"/></svg>
+        </span>
+        <strong>Drop files here</strong>
+        <span>or click to browse from your device</span>
+        <span class="file-summary" id="file-summary" aria-live="polite">Multiple files · 5 GB max each</span>
+        <input id="upload-files" type="file" name="files" multiple required>
       </label>
-      <button class="btn btn-primary btn-large" type="submit">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-        <span>Start upload</span>
-      </button>
+      <div class="upload-options">
+        <label class="field">
+          <span>Upload quality</span>
+          <select class="input" id="quality-select">
+            <option value="original">Original quality</option>
+            <option value="saver">Storage saver</option>
+            <option value="quota">Use quota</option>
+          </select>
+        </label>
+        <button class="btn btn-primary btn-large" type="submit">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <span>Start upload</span>
+        </button>
+      </div>
+      <div class="upload-encrypt">
+        <label class="encrypt-toggle">
+          <input type="checkbox" id="encrypt-toggle" value="on">
+          <span>Encrypt non-media files (AES-256-GCM)</span>
+        </label>
+        <input class="input passphrase-input" type="password" id="passphrase" placeholder="Passphrase (leave empty to use $GPIX_ENC_PASSPHRASE)" autocomplete="new-password" disabled>
+      </div>
+    </form>
+  </section>
+  <aside class="info-card">
+    <h3>How storage works</h3>
+    <div class="info-item">
+      <span class="info-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+      </span>
+      <div class="info-text">
+        <strong>Original quality</strong>
+        <span>Uploaded as-is, dedup by SHA-1.</span>
+      </div>
     </div>
-  </form>
-</section>
+    <div class="info-item">
+      <span class="info-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      </span>
+      <div class="info-text">
+        <strong>Non-media disguise</strong>
+        <span>PDFs, ZIPs, executables wrapped as MP4 transparently.</span>
+      </div>
+    </div>
+    <div class="info-item">
+      <span class="info-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+      </span>
+      <div class="info-text">
+        <strong>Optional encryption</strong>
+        <span>AES-256-GCM with Argon2id KDF on disguised files.</span>
+      </div>
+    </div>
+  </aside>
+</div>
 <div id="upload-status" role="status" aria-live="polite"></div>
 {{end}}
 {{define "scripts"}}
 <script>
 (function(){
   var f=document.getElementById('upload-form'),st=document.getElementById('upload-status');
+  var enc=document.getElementById('encrypt-toggle'),pw=document.getElementById('passphrase');
+  var qs=document.getElementById('quality-select');
+  var qm=document.getElementById('quality-mirror'),em=document.getElementById('encrypt-mirror'),pm=document.getElementById('passphrase-mirror');
+  if(enc&&pw){enc.addEventListener('change',function(){pw.disabled=!enc.checked;if(enc.checked)pw.focus();});}
+  function syncMirrors(){
+    if(qm&&qs)qm.value=qs.value;
+    if(em&&enc)em.value=enc.checked?'on':'';
+    if(pm&&pw)pm.value=enc&&enc.checked?(pw.value||''):'';
+  }
   f.addEventListener('submit',function(e){
     e.preventDefault();
+    syncMirrors();
+    if(enc&&enc.checked&&!(pw.value||'').trim()){
+      st.innerHTML='<div class="alert alert-error"><strong>Encryption needs a passphrase</strong><span>Enter one in the field, or untick the encrypt checkbox.</span></div>';
+      return;
+    }
     var fd=new FormData(f),id=Math.random().toString(36).slice(2,12),submit=f.querySelector('[type="submit"]');
     fd.append('upload_id',id);
     submit.disabled=true;submit.classList.add('is-loading');

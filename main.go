@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,7 +19,9 @@ import (
 
 	"gpix/pkg/bridge"
 	"gpix/pkg/gpmc"
+	"gpix/pkg/s3api"
 	"gpix/pkg/web"
+	"gpix/pkg/webdav"
 )
 
 func main() {
@@ -194,6 +197,9 @@ func startWeb(ctx context.Context, log *slog.Logger, auth, cfgPath, secretPath, 
 		return fmt.Errorf("web.New: %w", err)
 	}
 
+	mountWebDAV(srv, gp, log)
+	mountS3(srv, gp, log)
+
 	log.Info("gpix web started",
 		"listen", cfg.Listen,
 		"username", cfg.Username,
@@ -201,6 +207,36 @@ func startWeb(ctx context.Context, log *slog.Logger, auth, cfgPath, secretPath, 
 		"secret_path", secretPath,
 	)
 	return srv.Run(ctx)
+}
+
+func mountWebDAV(srv *web.Server, gp *gpmc.Client, log *slog.Logger) {
+	cfg, err := webdav.LoadFromEnv()
+	if err != nil {
+		log.Debug("webdav disabled", "reason", err.Error())
+		return
+	}
+	dav, err := webdav.NewServer(cfg, gp, log.With("service", "webdav"))
+	if err != nil {
+		log.Warn("webdav init failed", "err", err)
+		return
+	}
+	srv.Mount("/dav/", dav.Handler())
+	log.Info("webdav mounted", "path", "/dav/")
+}
+
+func mountS3(srv *web.Server, gp *gpmc.Client, log *slog.Logger) {
+	cfg, err := s3api.LoadFromEnv()
+	if err != nil {
+		log.Debug("s3 disabled", "reason", err.Error())
+		return
+	}
+	s3srv, err := s3api.NewServer(cfg, gp, log.With("service", "s3"))
+	if err != nil {
+		log.Warn("s3 init failed", "err", err)
+		return
+	}
+	srv.Mount("/s3/", http.StripPrefix("/s3", s3srv.Handler()))
+	log.Info("s3 mounted", "path", "/s3/", "bucket", cfg.Bucket)
 }
 
 func runCLI(authFlag, profileFlag, qualityFlag string, conc int, recursive, force, deleteAfter bool) {

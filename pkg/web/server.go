@@ -32,6 +32,14 @@ type Server struct {
 	mediaSignKey   []byte
 	tempSemaphore  chan struct{}
 	pageTmpls      map[string]*template.Template
+	extraMounts    map[string]http.Handler
+}
+
+func (s *Server) Mount(prefix string, h http.Handler) {
+	if s.extraMounts == nil {
+		s.extraMounts = make(map[string]http.Handler)
+	}
+	s.extraMounts[prefix] = h
 }
 
 func New(cfg Config, gp *gpmc.Client, log *slog.Logger) (*Server, error) {
@@ -56,7 +64,6 @@ func New(cfg Config, gp *gpmc.Client, log *slog.Logger) (*Server, error) {
 	}
 	s.httpSrv = &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           s.routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
@@ -64,6 +71,7 @@ func New(cfg Config, gp *gpmc.Client, log *slog.Logger) (*Server, error) {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	s.httpSrv.Handler = s.routes()
 	errCh := make(chan error, 1)
 	go func() {
 		s.log.Info("web server listening", "addr", s.cfg.Listen)
