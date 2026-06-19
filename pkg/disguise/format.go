@@ -43,8 +43,31 @@ func Wrap(name string, payload io.Reader, payloadSize int64) (io.Reader, int64) 
 	return r, total
 }
 
+func WrapEncrypted(name string, payload io.Reader, passphrase string) (io.Reader, int64, error) {
+	pt, err := readAllCapped(payload)
+	if err != nil {
+		return nil, 0, err
+	}
+	enc, err := encryptPayload(name, pt, passphrase)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := int64(len(wrapperMP4)) + int64(len(enc))
+	r := io.MultiReader(
+		bytes.NewReader(wrapperMP4),
+		bytes.NewReader(enc),
+	)
+	return r, total, nil
+}
+
 func LooksDisguised(head []byte) bool {
-	return bytes.Contains(head, []byte(Magic))
+	v, _ := peekVersion(head)
+	return v > 0
+}
+
+func LooksEncrypted(head []byte) bool {
+	v, _ := peekVersion(head)
+	return v == 2
 }
 
 func ParseHeader(buf []byte) (Header, int, error) {
@@ -75,6 +98,10 @@ func Extract(r io.Reader) (Header, io.Reader, error) {
 	if err != nil && err != io.EOF {
 		return Header{}, nil, fmt.Errorf("disguise: peek: %w", err)
 	}
+	v, _ := peekVersion(head)
+	if v == 2 {
+		return Header{}, nil, ErrEncrypted
+	}
 	hdr, headerEnd, err := ParseHeader(head)
 	if err != nil {
 		return Header{}, nil, err
@@ -83,6 +110,30 @@ func Extract(r io.Reader) (Header, io.Reader, error) {
 		return Header{}, nil, fmt.Errorf("disguise: discard wrapper: %w", err)
 	}
 	return hdr, io.LimitReader(br, hdr.PayloadSize), nil
+}
+
+func ExtractWithPassphrase(r io.Reader, passphrase string) (Header, io.Reader, error) {
+	full, err := io.ReadAll(r)
+	if err != nil {
+		return Header{}, nil, err
+	}
+	v, idx := peekVersion(full)
+	if v == 0 {
+		return Header{}, nil, ErrNotDisguised
+	}
+	if v == 1 {
+		hdr, headerEnd, err := ParseHeader(full)
+		if err != nil {
+			return Header{}, nil, err
+		}
+		end := min(int64(headerEnd)+hdr.PayloadSize, int64(len(full)))
+		return hdr, bytes.NewReader(full[headerEnd:end]), nil
+	}
+	hdr, plaintext, err := decryptPayload(full[idx:], passphrase)
+	if err != nil {
+		return Header{}, nil, err
+	}
+	return hdr, bytes.NewReader(plaintext), nil
 }
 
 func SniffStream(r io.Reader) (bool, []byte, io.Reader, error) {

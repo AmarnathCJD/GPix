@@ -31,6 +31,8 @@ func (s *Server) handleUploadSubmit(w http.ResponseWriter, r *http.Request) {
 
 	quality := gpmc.QualityOriginal
 	uploadID := randID()
+	passphrase := os.Getenv("GPIX_ENC_PASSPHRASE")
+	encryptOn := false
 
 	var results []string
 
@@ -58,12 +60,31 @@ func (s *Server) handleUploadSubmit(w http.ResponseWriter, r *http.Request) {
 			if v := string(b); v != "" {
 				uploadID = v
 			}
+		case "encrypt":
+			b, _ := io.ReadAll(part)
+			if v := string(b); v == "on" || v == "1" || v == "true" {
+				encryptOn = true
+			}
+		case "passphrase":
+			b, _ := io.ReadAll(part)
+			if v := string(b); v != "" {
+				passphrase = v
+			}
 		case "files":
 			fn := part.FileName()
 			if fn == "" {
 				continue
 			}
-			results = append(results, s.uploadOne(r, part, fn, quality, uploadID))
+			pw := ""
+			if encryptOn {
+				if passphrase == "" {
+					results = append(results, fn+"\trefused: encrypt checked but no passphrase (form fields out of order?)")
+					_, _ = io.Copy(io.Discard, part)
+					continue
+				}
+				pw = passphrase
+			}
+			results = append(results, s.uploadOne(r, part, fn, quality, uploadID, pw))
 		case "_csrf":
 			_, _ = io.Copy(io.Discard, part)
 		}
@@ -80,7 +101,7 @@ func (s *Server) handleUploadSubmit(w http.ResponseWriter, r *http.Request) {
 	s.progressBus.Publish(uploadID, "done")
 }
 
-func (s *Server) uploadOne(r *http.Request, src io.Reader, name string, quality gpmc.Quality, uploadID string) string {
+func (s *Server) uploadOne(r *http.Request, src io.Reader, name string, quality gpmc.Quality, uploadID, passphrase string) string {
 	select {
 	case s.tempSemaphore <- struct{}{}:
 	case <-r.Context().Done():
@@ -106,8 +127,9 @@ func (s *Server) uploadOne(r *http.Request, src io.Reader, name string, quality 
 	displayName := name
 	commitName := name
 	wasDisguised := false
+	wasEncrypted := false
 	if head, err := readHead(tmpPath, 512); err == nil && disguise.ShouldWrap("", name, head) {
-		wrappedPath, err := wrapToTemp(s.cfg.TempDir, tmpPath, name)
+		wrappedPath, err := wrapToTemp(s.cfg.TempDir, tmpPath, name, passphrase)
 		if err != nil {
 			return name + "\twrap: " + err.Error()
 		}
@@ -115,7 +137,12 @@ func (s *Server) uploadOne(r *http.Request, src io.Reader, name string, quality 
 		uploadPath = wrappedPath
 		commitName = name + ".mp4"
 		wasDisguised = true
-		s.progressBus.Publish(uploadID, "wrapped "+name+" as mp4")
+		wasEncrypted = passphrase != ""
+		if wasEncrypted {
+			s.progressBus.Publish(uploadID, "encrypted + wrapped "+name+" as mp4")
+		} else {
+			s.progressBus.Publish(uploadID, "wrapped "+name+" as mp4")
+		}
 	}
 
 	s.progressBus.Publish(uploadID, "uploading "+displayName+" to google photos…")
@@ -127,7 +154,11 @@ func (s *Server) uploadOne(r *http.Request, src io.Reader, name string, quality 
 	}
 	marker := "uploaded"
 	if wasDisguised {
-		marker = "uploaded (disguised)"
+		if wasEncrypted {
+			marker = "uploaded (disguised, encrypted)"
+		} else {
+			marker = "uploaded (disguised)"
+		}
 	}
 	if res.Skipped {
 		marker = "already in library"
@@ -152,7 +183,7 @@ func readHead(path string, n int) ([]byte, error) {
 	return buf[:read], nil
 }
 
-func wrapToTemp(tempDir, srcPath, name string) (string, error) {
+func wrapToTemp(tempDir, srcPath, name, passphrase string) (string, error) {
 	src, err := os.Open(srcPath)
 	if err != nil {
 		return "", err
@@ -167,7 +198,16 @@ func wrapToTemp(tempDir, srcPath, name string) (string, error) {
 		return "", err
 	}
 	defer out.Close()
-	wrapped, _ := disguise.Wrap(name, src, st.Size())
+	var wrapped io.Reader
+	if passphrase != "" {
+		wrapped, _, err = disguise.WrapEncrypted(name, src, passphrase)
+		if err != nil {
+			os.Remove(out.Name())
+			return "", err
+		}
+	} else {
+		wrapped, _ = disguise.Wrap(name, src, st.Size())
+	}
 	if _, err := io.Copy(out, wrapped); err != nil {
 		os.Remove(out.Name())
 		return "", err

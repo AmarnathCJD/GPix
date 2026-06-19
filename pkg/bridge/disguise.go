@@ -24,7 +24,7 @@ func readHead(path string, n int) ([]byte, error) {
 	return buf[:read], nil
 }
 
-func wrapTGFile(tempDir, srcPath, name string) (string, error) {
+func wrapTGFile(tempDir, srcPath, name, passphrase string) (string, error) {
 	src, err := os.Open(srcPath)
 	if err != nil {
 		return "", err
@@ -39,7 +39,16 @@ func wrapTGFile(tempDir, srcPath, name string) (string, error) {
 		return "", err
 	}
 	defer out.Close()
-	wrapped, _ := disguise.Wrap(name, src, st.Size())
+	var wrapped io.Reader
+	if passphrase != "" {
+		wrapped, _, err = disguise.WrapEncrypted(name, src, passphrase)
+		if err != nil {
+			os.Remove(out.Name())
+			return "", err
+		}
+	} else {
+		wrapped, _ = disguise.Wrap(name, src, st.Size())
+	}
 	if _, err := io.Copy(out, wrapped); err != nil {
 		os.Remove(out.Name())
 		return "", err
@@ -47,13 +56,13 @@ func wrapTGFile(tempDir, srcPath, name string) (string, error) {
 	return out.Name(), nil
 }
 
-func unwrapTGFile(tempDir, srcPath string) (extractedPath, origName string, err error) {
+func unwrapTGFile(tempDir, srcPath, passphrase string) (extractedPath, origName string, err error) {
 	src, err := os.Open(srcPath)
 	if err != nil {
 		return "", "", err
 	}
 	defer src.Close()
-	hdr, payload, err := disguise.Extract(src)
+	hdr, payload, err := disguise.ExtractWithPassphrase(src, passphrase)
 	if err != nil {
 		return "", "", err
 	}

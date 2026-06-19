@@ -35,6 +35,10 @@ func (b *Bot) handleUpload(m *telegram.NewMessage) error {
 	}
 
 	quality := parseUploadArg(m.Text())
+	passphrase := parseKeyValueArg(m.Text(), "encrypt")
+	if passphrase == "" {
+		passphrase = os.Getenv("GPIX_ENC_PASSPHRASE")
+	}
 
 	release, err := b.xfer.Acquire(b.ctx)
 	if err != nil {
@@ -81,9 +85,18 @@ func (b *Bot) handleUpload(m *telegram.NewMessage) error {
 		}
 	}
 	commitName := declaredName
+	wasEncrypted := false
 	if head, err := readHead(dlPath, 512); err == nil && disguise.ShouldWrap("", declaredName, head) {
-		throttle.Force("Wrapping " + declaredName + " as MP4…")
-		wrappedPath, err := wrapTGFile(b.xfer.TempDir, dlPath, declaredName)
+		pw := ""
+		if parseKeyValueArg(m.Text(), "encrypt") != "" || os.Getenv("GPIX_ENC_PASSPHRASE") != "" {
+			pw = passphrase
+		}
+		if pw != "" {
+			throttle.Force("Encrypting + wrapping " + declaredName + " as MP4…")
+		} else {
+			throttle.Force("Wrapping " + declaredName + " as MP4…")
+		}
+		wrappedPath, err := wrapTGFile(b.xfer.TempDir, dlPath, declaredName, pw)
 		if err != nil {
 			throttle.Force("Wrap failed: " + err.Error())
 			return err
@@ -92,6 +105,7 @@ func (b *Bot) handleUpload(m *telegram.NewMessage) error {
 		uploadPath = wrappedPath
 		commitName = declaredName + ".mp4"
 		wasDisguised = true
+		wasEncrypted = pw != ""
 	}
 
 	throttle.Force("Uploading to Google Photos…")
@@ -116,7 +130,11 @@ func (b *Bot) handleUpload(m *telegram.NewMessage) error {
 
 	msg := FormatUploadResult(res)
 	if wasDisguised {
-		msg = "Disguised as MP4 · " + declaredName + "\n" + msg
+		tag := "Disguised as MP4"
+		if wasEncrypted {
+			tag = "Disguised + encrypted as MP4"
+		}
+		msg = tag + " · " + declaredName + "\n" + msg
 	}
 	throttle.Force(msg)
 	return nil
@@ -173,8 +191,20 @@ func (b *Bot) handleGet(m *telegram.NewMessage) error {
 	sendName := suggestFileName(orig, mime)
 	sendMime := mime
 	if head, err := readHead(sendPath, 8192); err == nil && disguise.LooksDisguised(head) {
-		throttle.Force("Unwrapping disguised file…")
-		extractedPath, origName, err := unwrapTGFile(b.xfer.TempDir, sendPath)
+		pw := parseKeyValueArg(m.Text(), "decrypt")
+		if pw == "" {
+			pw = os.Getenv("GPIX_ENC_PASSPHRASE")
+		}
+		if disguise.LooksEncrypted(head) {
+			if pw == "" {
+				throttle.Force("File is encrypted. Run again as /get " + key + " decrypt:<passphrase> or set GPIX_ENC_PASSPHRASE.")
+				return nil
+			}
+			throttle.Force("Decrypting + unwrapping disguised file…")
+		} else {
+			throttle.Force("Unwrapping disguised file…")
+		}
+		extractedPath, origName, err := unwrapTGFile(b.xfer.TempDir, sendPath, pw)
 		if err != nil {
 			throttle.Force("Unwrap failed: " + err.Error())
 			return err

@@ -11,12 +11,13 @@ const (
 )
 
 type UploadOpts struct {
-	Quality     Quality
-	Force       bool
-	Concurrency int
-	Recursive   bool
-	DeleteAfter bool
-	OverrideName string
+	Quality            Quality
+	Force              bool
+	Concurrency        int
+	Recursive          bool
+	DeleteAfter        bool
+	OverrideName       string
+	EncryptPassphrase  string
 }
 
 type Option func(*Client)

@@ -3,6 +3,7 @@ package bridge
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
 	"gpix/pkg/gpmc"
 )
@@ -24,6 +25,16 @@ func FormatUploadResult(r gpmc.UploadResult) string {
 		verb = "Already in library"
 	}
 	return fmt.Sprintf("%s: %s\nhttps://photos.google.com/lc/%s", verb, r.MediaKey, r.MediaKey)
+}
+
+func parseKeyValueArg(text, key string) string {
+	prefix := key + ":"
+	for _, tok := range strings.Fields(text) {
+		if strings.HasPrefix(tok, prefix) {
+			return strings.TrimPrefix(tok, prefix)
+		}
+	}
+	return ""
 }
 
 func parseUploadArg(text string) gpmc.Quality {
