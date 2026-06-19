@@ -2,8 +2,12 @@ package bridge
 
 import (
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"strconv"
+
+	"github.com/amarnathcjd/gogram/telegram"
 )
 
 type Config struct {
@@ -14,6 +18,8 @@ type Config struct {
 	SessionFile   string
 	TempDir       string
 	MaxConcurrent int
+	Proxy         telegram.Proxy
+	ProxyURL      string
 }
 
 func LoadConfigFromEnv() (Config, error) {
@@ -48,7 +54,60 @@ func LoadConfigFromEnv() (Config, error) {
 			cfg.MaxConcurrent = n
 		}
 	}
+
+	if v := os.Getenv("TG_PROXY"); v != "" {
+		p, err := ParseProxyURL(v)
+		if err != nil {
+			return cfg, fmt.Errorf("TG_PROXY: %w", err)
+		}
+		cfg.Proxy = p
+		cfg.ProxyURL = v
+	}
+
 	return cfg, nil
+}
+
+func ParseProxyURL(raw string) (telegram.Proxy, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse url: %w", err)
+	}
+	if u.Host == "" {
+		return nil, errors.New("missing host:port")
+	}
+	host := u.Hostname()
+	portStr := u.Port()
+	if portStr == "" {
+		return nil, errors.New("missing port")
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid port %q: %w", portStr, err)
+	}
+	base := telegram.BaseProxy{Host: host, Port: port}
+
+	username := ""
+	password := ""
+	if u.User != nil {
+		username = u.User.Username()
+		password, _ = u.User.Password()
+	}
+
+	switch u.Scheme {
+	case "socks5", "socks5h":
+		return &telegram.Socks5Proxy{BaseProxy: base, Username: username, Password: password}, nil
+	case "socks4":
+		return &telegram.Socks4Proxy{BaseProxy: base, UserID: username}, nil
+	case "http", "https":
+		return &telegram.HttpProxy{BaseProxy: base, Username: username, Password: password}, nil
+	case "mtproxy", "mtproto":
+		if username == "" {
+			return nil, errors.New("mtproxy URL needs the secret in the userinfo position: mtproxy://<secret>@host:port")
+		}
+		return &telegram.MTProxy{BaseProxy: base, Secret: username}, nil
+	default:
+		return nil, fmt.Errorf("unknown proxy scheme %q (supported: socks5, socks4, http, mtproxy)", u.Scheme)
+	}
 }
 
 func getenvDefault(key, def string) string {

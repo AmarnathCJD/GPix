@@ -28,7 +28,7 @@ func New(cfg Config, gp *gpmc.Client, log *slog.Logger) (*Bot, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	tg, err := telegram.NewClient(telegram.ClientConfig{
+	tgCfg := telegram.ClientConfig{
 		AppID:    cfg.APIID,
 		AppHash:  cfg.APIHash,
 		Session:  cfg.SessionFile,
@@ -37,7 +37,16 @@ func New(cfg Config, gp *gpmc.Client, log *slog.Logger) (*Bot, error) {
 			log.Warn("FLOOD_WAIT", "err", err)
 			return true
 		},
-	})
+	}
+	if cfg.Proxy != nil {
+		tgCfg.Proxy = cfg.Proxy
+		log.Info("telegram proxy configured",
+			"type", cfg.Proxy.Type(),
+			"host", cfg.Proxy.GetHost(),
+			"port", cfg.Proxy.GetPort(),
+		)
+	}
+	tg, err := telegram.NewClient(tgCfg)
 	if err != nil {
 		return nil, fmt.Errorf("bridge: telegram.NewClient: %w", err)
 	}
