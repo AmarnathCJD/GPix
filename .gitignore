@@ -19,6 +19,9 @@ cache_*.db
 debug.log
 *.log
 gateways.json
+*.db*
+*.key
+
 
 # Local config (provide a *.example template instead)
 gpix-web.conf
