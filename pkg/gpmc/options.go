@@ -1,6 +1,10 @@
 package gpmc
 
-import "net/http"
+import (
+	"net/http"
+
+	"gpix/pkg/gpmc/albumstore"
+)
 
 type Quality int
 
@@ -36,4 +40,14 @@ func WithLanguage(lang string) Option {
 
 func WithProxy(proxy string) Option {
 	return func(c *Client) { c.proxy = proxy }
+}
+
+func WithAlbumStore(path string) Option {
+	return func(c *Client) {
+		s, err := albumstore.Open(path)
+		if err != nil {
+			return
+		}
+		c.albums = s
+	}
 }

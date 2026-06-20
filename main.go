@@ -130,6 +130,25 @@ func runBot(ctx context.Context, log *slog.Logger, auth, profileFlag string) {
 	}
 }
 
+func albumStorePath(cfgPath string) string {
+	dir := filepath.Dir(cfgPath)
+	if dir == "" || dir == "." {
+		if home, err := os.UserHomeDir(); err == nil {
+			dir = home
+		} else {
+			dir = "."
+		}
+	}
+	return filepath.Join(dir, "gpix-albums.json")
+}
+
+func cfgPathForBot() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "gpix-bot")
+	}
+	return "gpix-bot"
+}
+
 func runWeb(ctx context.Context, log *slog.Logger, auth, cfgPath, secretPath, profileFlag string) {
 	if err := startWeb(ctx, log, auth, cfgPath, secretPath, profileFlag); err != nil {
 		log.Error("web stopped", "err", err)
@@ -148,7 +167,7 @@ func startBot(ctx context.Context, log *slog.Logger, auth, profileFlag string) e
 		return err
 	}
 
-	gp, err := gpmc.New(auth, gpmc.WithDeviceProfile(profile))
+	gp, err := gpmc.New(auth, gpmc.WithDeviceProfile(profile), gpmc.WithAlbumStore(albumStorePath(cfgPathForBot())))
 	if err != nil {
 		return fmt.Errorf("gpmc.New: %w", err)
 	}
@@ -187,7 +206,7 @@ func startWeb(ctx context.Context, log *slog.Logger, auth, cfgPath, secretPath, 
 		return err
 	}
 
-	gp, err := gpmc.New(auth, gpmc.WithDeviceProfile(profile))
+	gp, err := gpmc.New(auth, gpmc.WithDeviceProfile(profile), gpmc.WithAlbumStore(albumStorePath(cfgPath)))
 	if err != nil {
 		return fmt.Errorf("gpmc.New: %w", err)
 	}

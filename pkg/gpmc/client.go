@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gpix/pkg/gpmc/albumstore"
 )
 
 type Client struct {
@@ -22,7 +24,14 @@ type Client struct {
 	expires time.Time
 
 	drive driveTokenCache
+
+	albums *albumstore.Store
+
+	syncMu sync.Mutex
+	sync   *syncCache
 }
+
+func (c *Client) AlbumStore() *albumstore.Store { return c.albums }
 
 func (c *Client) HTTPClient() *http.Client     { return c.httpc }
 func (c *Client) DeviceProfile() DeviceProfile { return c.profile }

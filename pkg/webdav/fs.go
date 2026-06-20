@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 
 	"gpix/pkg/disguise"
 	"gpix/pkg/gpmc"
+	"gpix/pkg/gpmc/albumstore"
 )
 
 type gpixFS struct {
@@ -31,6 +33,28 @@ func newFS(gp *gpmc.Client, cfg Config) *gpixFS {
 }
 
 func (f *gpixFS) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
+	parts := splitParts(name)
+	if len(parts) == 2 && parts[0] == "albums" {
+		title, err := url.PathUnescape(parts[1])
+		if err != nil {
+			title = parts[1]
+		}
+		if _, ok, _ := f.gp.FindAlbumByTitle(ctx, title); ok {
+			return os.ErrExist
+		}
+		key, err := f.gp.CreateAlbum(ctx, title, nil)
+		if err != nil {
+			return err
+		}
+		if store := f.gp.AlbumStore(); store != nil {
+			_ = store.PutAlbum(ctx, albumstore.Album{
+				MediaKey:  key,
+				Title:     title,
+				CreatedAt: time.Now(),
+			})
+		}
+		return nil
+	}
 	return webdav.ErrForbidden
 }
 
@@ -60,59 +84,102 @@ const (
 	dirRoot dirKind = iota
 	dirLibrary
 	dirPage
+	dirAlbums
+	dirAlbum
 	dirInvalid
 )
 
 type resolved struct {
-	kind   dirKind
-	cursor string // page cursor for a dirPage
-	label  string // directory base name
-	isFile bool
-	item   gpmc.MediaItem
+	kind     dirKind
+	cursor   string // page cursor for a dirPage
+	label    string // directory base name
+	isFile   bool
+	item     gpmc.MediaItem
+	albumKey string
+	album    gpmc.Album
 }
 
-// resolve maps a WebDAV path onto the virtual tree without hitting the network
-// for directories; only file resolution triggers a list lookup.
 func (f *gpixFS) resolve(ctx context.Context, name string) (resolved, error) {
 	parts := splitParts(name)
 	switch len(parts) {
 	case 0:
 		return resolved{kind: dirRoot, label: ""}, nil
 	case 1:
-		if parts[0] == "library" {
+		switch parts[0] {
+		case "library":
 			return resolved{kind: dirLibrary, label: "library"}, nil
+		case "albums":
+			return resolved{kind: dirAlbums, label: "albums"}, nil
 		}
 		return resolved{kind: dirInvalid}, os.ErrNotExist
 	case 2:
-		if parts[0] != "library" {
-			return resolved{kind: dirInvalid}, os.ErrNotExist
-		}
-		cursor, ok := f.cursorForLabel(ctx, parts[1])
-		if !ok {
-			return resolved{kind: dirInvalid}, os.ErrNotExist
-		}
-		return resolved{kind: dirPage, cursor: cursor, label: parts[1]}, nil
-	case 3:
-		if parts[0] != "library" {
-			return resolved{kind: dirInvalid}, os.ErrNotExist
-		}
-		cursor, ok := f.cursorForLabel(ctx, parts[1])
-		if !ok {
-			return resolved{kind: dirInvalid}, os.ErrNotExist
-		}
-		page, err := f.gp.ListPage(ctx, cursor)
-		if err != nil {
-			return resolved{}, err
-		}
-		for _, it := range page.Items {
-			if displayName(it) == parts[2] {
-				return resolved{isFile: true, label: parts[2], item: it}, nil
+		if parts[0] == "library" {
+			cursor, ok := f.cursorForLabel(ctx, parts[1])
+			if !ok {
+				return resolved{kind: dirInvalid}, os.ErrNotExist
 			}
+			return resolved{kind: dirPage, cursor: cursor, label: parts[1]}, nil
+		}
+		if parts[0] == "albums" {
+			title := unescapeSegment(parts[1])
+			album, ok, err := f.gp.FindAlbumByTitle(ctx, title)
+			if err != nil {
+				return resolved{}, err
+			}
+			if !ok {
+				return resolved{kind: dirInvalid}, os.ErrNotExist
+			}
+			return resolved{kind: dirAlbum, label: parts[1], albumKey: album.MediaKey, album: album}, nil
+		}
+		return resolved{kind: dirInvalid}, os.ErrNotExist
+	case 3:
+		if parts[0] == "library" {
+			cursor, ok := f.cursorForLabel(ctx, parts[1])
+			if !ok {
+				return resolved{kind: dirInvalid}, os.ErrNotExist
+			}
+			page, err := f.gp.ListPage(ctx, cursor)
+			if err != nil {
+				return resolved{}, err
+			}
+			for _, it := range page.Items {
+				if displayName(it) == parts[2] {
+					return resolved{isFile: true, label: parts[2], item: it}, nil
+				}
+			}
+			return resolved{kind: dirInvalid}, os.ErrNotExist
+		}
+		if parts[0] == "albums" {
+			title := unescapeSegment(parts[1])
+			album, ok, err := f.gp.FindAlbumByTitle(ctx, title)
+			if err != nil {
+				return resolved{}, err
+			}
+			if !ok {
+				return resolved{kind: dirInvalid}, os.ErrNotExist
+			}
+			items, err := f.gp.ListAlbumItems(ctx, album.MediaKey)
+			if err != nil {
+				return resolved{}, err
+			}
+			for _, it := range items {
+				if displayName(it) == parts[2] {
+					return resolved{isFile: true, label: parts[2], item: it, albumKey: album.MediaKey, album: album}, nil
+				}
+			}
+			return resolved{kind: dirInvalid}, os.ErrNotExist
 		}
 		return resolved{kind: dirInvalid}, os.ErrNotExist
 	default:
 		return resolved{kind: dirInvalid}, os.ErrNotExist
 	}
+}
+
+func unescapeSegment(s string) string {
+	if u, err := url.PathUnescape(s); err == nil {
+		return u
+	}
+	return s
 }
 
 // cursorForLabel maps "recent" → "" (first page) and "page-N" → the cursor
@@ -151,6 +218,35 @@ func (f *gpixFS) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 }
 
 func (f *gpixFS) RemoveAll(ctx context.Context, name string) error {
+	parts := splitParts(name)
+	if len(parts) == 2 && parts[0] == "albums" {
+		title := unescapeSegment(parts[1])
+		album, ok, err := f.gp.FindAlbumByTitle(ctx, title)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return os.ErrNotExist
+		}
+		if store := f.gp.AlbumStore(); store != nil {
+			return store.DeleteAlbum(ctx, album.MediaKey)
+		}
+		return webdav.ErrForbidden
+	}
+	if len(parts) == 3 && parts[0] == "albums" {
+		r, err := f.resolve(ctx, name)
+		if err != nil {
+			return err
+		}
+		if !r.isFile {
+			return webdav.ErrForbidden
+		}
+		if store := f.gp.AlbumStore(); store != nil {
+			return store.RemoveMembers(ctx, r.albumKey, []string{r.item.MediaKey})
+		}
+		return webdav.ErrForbidden
+	}
+
 	r, err := f.resolve(ctx, name)
 	if err != nil {
 		return err
@@ -169,8 +265,21 @@ func (f *gpixFS) RemoveAll(ctx context.Context, name string) error {
 }
 
 func (f *gpixFS) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (webdav.File, error) {
+	parts := splitParts(name)
+
 	if flag&(os.O_WRONLY|os.O_RDWR|os.O_CREATE) != 0 {
-		return newPendingUpload(f, name)
+		if len(parts) == 3 && parts[0] == "albums" {
+			title := unescapeSegment(parts[1])
+			album, ok, err := f.gp.FindAlbumByTitle(ctx, title)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			return newPendingUpload(f, name, album.MediaKey)
+		}
+		return newPendingUpload(f, name, "")
 	}
 
 	r, err := f.resolve(ctx, name)
@@ -202,32 +311,77 @@ func (d *dir) Readdir(count int) ([]fs.FileInfo, error) {
 	var infos []fs.FileInfo
 	switch len(parts) {
 	case 0:
-		infos = []fs.FileInfo{dirInfo("library")}
-	case 1: // /library
-		labels, err := d.fs.pageLabels(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, l := range labels {
-			infos = append(infos, dirInfo(l))
-		}
-	case 2: // /library/<page>
-		cursor, ok := d.fs.cursorForLabel(ctx, parts[1])
-		if !ok {
+		infos = []fs.FileInfo{dirInfo("library"), dirInfo("albums")}
+	case 1:
+		switch parts[0] {
+		case "library":
+			labels, err := d.fs.pageLabels(ctx)
+			if err != nil {
+				return nil, err
+			}
+			for _, l := range labels {
+				infos = append(infos, dirInfo(l))
+			}
+		case "albums":
+			albums, err := d.fs.gp.ListAlbums(ctx)
+			if err != nil {
+				return nil, err
+			}
+			seen := map[string]bool{}
+			for _, a := range albums {
+				name := albumDirName(a)
+				if name == "" || seen[name] {
+					continue
+				}
+				seen[name] = true
+				infos = append(infos, dirInfoAt(name, a.ModTime()))
+			}
+		default:
 			return nil, os.ErrNotExist
 		}
-		page, err := d.fs.gp.ListPage(ctx, cursor)
-		if err != nil {
-			return nil, err
-		}
-		seen := make(map[string]bool, len(page.Items))
-		for _, it := range page.Items {
-			n := displayName(it)
-			if seen[n] {
-				continue
+	case 2:
+		if parts[0] == "library" {
+			cursor, ok := d.fs.cursorForLabel(ctx, parts[1])
+			if !ok {
+				return nil, os.ErrNotExist
 			}
-			seen[n] = true
-			infos = append(infos, fileInfo(it))
+			page, err := d.fs.gp.ListPage(ctx, cursor)
+			if err != nil {
+				return nil, err
+			}
+			seen := make(map[string]bool, len(page.Items))
+			for _, it := range page.Items {
+				n := displayName(it)
+				if seen[n] {
+					continue
+				}
+				seen[n] = true
+				infos = append(infos, fileInfo(it))
+			}
+		} else if parts[0] == "albums" {
+			title := unescapeSegment(parts[1])
+			album, ok, err := d.fs.gp.FindAlbumByTitle(ctx, title)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			items, err := d.fs.gp.ListAlbumItems(ctx, album.MediaKey)
+			if err != nil {
+				return nil, err
+			}
+			seen := make(map[string]bool, len(items))
+			for _, it := range items {
+				n := displayName(it)
+				if seen[n] {
+					continue
+				}
+				seen[n] = true
+				infos = append(infos, fileInfo(it))
+			}
+		} else {
+			return nil, os.ErrNotExist
 		}
 	default:
 		return nil, os.ErrNotExist
@@ -399,7 +553,6 @@ func (f *gpixFS) extractToTemp(ctx context.Context, item gpmc.MediaItem, url str
 
 	_, payload, err := disguise.Extract(resp.Body)
 	if errors.Is(err, disguise.ErrEncrypted) {
-		// Extract consumed the buffered head; re-fetch for a fresh stream.
 		resp.Body.Close()
 		req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		resp2, err2 := f.gp.HTTPClient().Do(req2)
@@ -527,18 +680,19 @@ func (r *rangeReader) Close() error {
 }
 
 type pendingUpload struct {
-	fs   *gpixFS
-	name string
-	tmp  *os.File
-	done bool
+	fs        *gpixFS
+	name      string
+	albumKey  string
+	tmp       *os.File
+	done      bool
 }
 
-func newPendingUpload(f *gpixFS, name string) (*pendingUpload, error) {
+func newPendingUpload(f *gpixFS, name, albumKey string) (*pendingUpload, error) {
 	tmp, err := os.CreateTemp(os.TempDir(), "gpix-davup-*")
 	if err != nil {
 		return nil, err
 	}
-	return &pendingUpload{fs: f, name: name, tmp: tmp}, nil
+	return &pendingUpload{fs: f, name: name, albumKey: albumKey, tmp: tmp}, nil
 }
 
 func (p *pendingUpload) Write(b []byte) (int, error) { return p.tmp.Write(b) }
@@ -556,11 +710,23 @@ func (p *pendingUpload) Close() error {
 
 	filename := path.Base(cleanPath(p.name))
 	ctx := context.Background()
-	_, err := p.fs.gp.UploadFile(ctx, tmpPath, gpmc.UploadOpts{
+	res, err := p.fs.gp.UploadFile(ctx, tmpPath, gpmc.UploadOpts{
 		OverrideName:      filename,
 		EncryptPassphrase: p.fs.cfg.EncPassphrase,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+
+	if p.albumKey != "" && res.MediaKey != "" {
+		if err := p.fs.gp.AddMediaToAlbum(ctx, p.albumKey, []string{res.MediaKey}); err != nil {
+			return fmt.Errorf("webdav: add to album: %w", err)
+		}
+		if store := p.fs.gp.AlbumStore(); store != nil {
+			_ = store.AddMembers(ctx, p.albumKey, []string{res.MediaKey})
+		}
+	}
+	return nil
 }
 
 func (p *pendingUpload) Read([]byte) (int, error)       { return 0, os.ErrPermission }
@@ -579,6 +745,14 @@ func displayName(it gpmc.MediaItem) string {
 	return it.MediaKey
 }
 
+func albumDirName(a gpmc.Album) string {
+	t := strings.TrimSpace(a.Title)
+	if t == "" {
+		return ""
+	}
+	return strings.ReplaceAll(t, "/", "-")
+}
+
 func fileInfo(it gpmc.MediaItem) fs.FileInfo {
 	return &staticInfo{
 		name:    displayName(it),
@@ -590,6 +764,13 @@ func fileInfo(it gpmc.MediaItem) fs.FileInfo {
 
 func dirInfo(name string) fs.FileInfo {
 	return &staticInfo{name: name, mode: fs.ModeDir | 0o755, modTime: time.Now(), isDir: true}
+}
+
+func dirInfoAt(name string, mt time.Time) fs.FileInfo {
+	if mt.IsZero() {
+		mt = time.Now()
+	}
+	return &staticInfo{name: name, mode: fs.ModeDir | 0o755, modTime: mt, isDir: true}
 }
 
 type staticInfo struct {

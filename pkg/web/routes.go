@@ -23,6 +23,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /delete/{key}", s.requireSession(s.handleDelete))
 	mux.HandleFunc("POST /api/bulk/delete", s.requireSession(s.handleBulkDelete))
 	mux.HandleFunc("GET /api/bulk/download", s.requireSession(s.handleBulkDownload))
+	mux.HandleFunc("GET /api/albums", s.requireSession(s.handleAlbumsList))
+	mux.HandleFunc("POST /api/albums", s.requireSession(s.handleAlbumCreate))
+	mux.HandleFunc("POST /api/albums/add", s.requireSession(s.handleAlbumAdd))
 	mux.HandleFunc("GET /api/upload-progress/{id}", s.requireSession(s.handleProgressSSE))
 
 	mux.HandleFunc("GET /stream/{token}", s.handleStream)
