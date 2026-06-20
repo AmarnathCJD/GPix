@@ -34,6 +34,8 @@ import (
 
 	"gpix/pkg/disguise"
 	"gpix/pkg/gpmc"
+	"gpix/pkg/library"
+	"gpix/pkg/mediacrypt"
 	"gpix/pkg/store"
 )
 
@@ -44,33 +46,40 @@ type Options struct {
 	TempDir string
 	// Quality is the upload quality passed to gpmc. Defaults to original.
 	Quality gpmc.Quality
-	// ListTTL is how long a library listing is cached for key→media-key
-	// resolution. Defaults to 15s.
+	// ListTTL is how long a library listing is cached when Library is not
+	// supplied. Defaults to 60s.
 	ListTTL time.Duration
+	// Library is the shared, background-refreshed listing cache. When nil a
+	// private one is created. Sharing it across surfaces (S3, WebDAV, shares)
+	// avoids re-walking the whole Google Photos library per request.
+	Library *library.Cache
+	// Crypt, when set and enabled, encrypts uploads before they are disguised,
+	// and decrypts encrypted downloads. May be nil.
+	Crypt *mediacrypt.Manager
 }
 
 // Backend is a store.Backend backed by Google Photos.
 type Backend struct {
 	gp   *gpmc.Client
 	opts Options
-
-	mu        sync.Mutex
-	index     map[string]gpmc.MediaItem // display key -> newest media item
-	indexedAt time.Time
-
+	lib  *library.Cache
 	urls urlCache
 }
 
 // New returns a Google-Photos-backed store.
 func New(gp *gpmc.Client, opts Options) *Backend {
 	if opts.ListTTL <= 0 {
-		opts.ListTTL = 15 * time.Second
+		opts.ListTTL = 60 * time.Second
+	}
+	lib := opts.Library
+	if lib == nil {
+		lib = library.New(gp, opts.ListTTL, nil)
 	}
 	return &Backend{
-		gp:    gp,
-		opts:  opts,
-		index: map[string]gpmc.MediaItem{},
-		urls:  urlCache{gp: gp, m: map[string]urlEntry{}},
+		gp:   gp,
+		opts: opts,
+		lib:  lib,
+		urls: urlCache{gp: gp, m: map[string]urlEntry{}},
 	}
 }
 
@@ -109,21 +118,13 @@ func objectFromItem(it gpmc.MediaItem) store.Object {
 	}
 }
 
-// refreshIndex rebuilds the key→item map from a full library listing if the
-// cached copy is older than ListTTL (or force is set).
-func (b *Backend) refreshIndex(ctx context.Context, force bool) error {
-	b.mu.Lock()
-	fresh := !force && time.Since(b.indexedAt) < b.opts.ListTTL && len(b.index) > 0
-	b.mu.Unlock()
-	if fresh {
-		return nil
-	}
-
-	items, err := b.gp.ListRecent(ctx, 0)
+// displayIndex builds the display-key → newest-item map from the shared cache.
+// The cached slice is newest-first, so the first occurrence of a key wins.
+func (b *Backend) displayIndex(ctx context.Context) (map[string]gpmc.MediaItem, error) {
+	items, err := b.lib.All(ctx)
 	if err != nil {
-		return fmt.Errorf("gpmcstore: list library: %w", err)
+		return nil, fmt.Errorf("gpmcstore: list library: %w", err)
 	}
-	// items are newest-first; first occurrence of a key wins.
 	idx := make(map[string]gpmc.MediaItem, len(items))
 	for _, it := range items {
 		k := displayKey(it)
@@ -131,26 +132,15 @@ func (b *Backend) refreshIndex(ctx context.Context, force bool) error {
 			idx[k] = it
 		}
 	}
-	b.mu.Lock()
-	b.index = idx
-	b.indexedAt = time.Now()
-	b.mu.Unlock()
-	return nil
+	return idx, nil
 }
 
 func (b *Backend) lookup(ctx context.Context, key string) (gpmc.MediaItem, error) {
-	b.mu.Lock()
-	it, ok := b.index[key]
-	b.mu.Unlock()
-	if ok {
-		return it, nil
-	}
-	if err := b.refreshIndex(ctx, true); err != nil {
+	idx, err := b.displayIndex(ctx)
+	if err != nil {
 		return gpmc.MediaItem{}, err
 	}
-	b.mu.Lock()
-	it, ok = b.index[key]
-	b.mu.Unlock()
+	it, ok := idx[key]
 	if !ok {
 		return gpmc.MediaItem{}, store.ErrNotFound
 	}
@@ -158,21 +148,18 @@ func (b *Backend) lookup(ctx context.Context, key string) (gpmc.MediaItem, error
 }
 
 func (b *Backend) invalidate() {
-	b.mu.Lock()
-	b.indexedAt = time.Time{}
-	b.mu.Unlock()
+	b.lib.Invalidate()
 }
 
 func (b *Backend) List(ctx context.Context) ([]store.Object, error) {
-	if err := b.refreshIndex(ctx, false); err != nil {
+	idx, err := b.displayIndex(ctx)
+	if err != nil {
 		return nil, err
 	}
-	b.mu.Lock()
-	out := make([]store.Object, 0, len(b.index))
-	for _, it := range b.index {
+	out := make([]store.Object, 0, len(idx))
+	for _, it := range idx {
 		out = append(out, objectFromItem(it))
 	}
-	b.mu.Unlock()
 	return out, nil
 }
 
@@ -193,6 +180,24 @@ type readCloser struct {
 
 func (rc readCloser) Read(p []byte) (int, error) { return rc.r.Read(p) }
 func (rc readCloser) Close() error               { return rc.c.Close() }
+
+// multiReadCloser reads from r and closes several closers in order (e.g. the
+// decryption pipe reader first, then the HTTP body).
+type multiReadCloser struct {
+	r       io.Reader
+	closers []io.Closer
+}
+
+func (m multiReadCloser) Read(p []byte) (int, error) { return m.r.Read(p) }
+func (m multiReadCloser) Close() error {
+	var first error
+	for _, c := range m.closers {
+		if err := c.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
 
 func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, store.Object, error) {
 	it, err := b.lookup(ctx, key)
@@ -231,6 +236,23 @@ func (b *Backend) Get(ctx context.Context, key string) (io.ReadCloser, store.Obj
 			obj.Size = hdr.PayloadSize
 			if hdr.Filename != "" {
 				obj.ContentType = contentTypeFor(hdr.Filename, gpmc.KindUnknown)
+			}
+			// The unwrapped payload may itself be an encrypted blob.
+			if b.opts.Crypt != nil {
+				pbr := bufio.NewReader(payload)
+				if ph, _ := pbr.Peek(len(mediacrypt.Magic)); mediacrypt.HasMagic(ph) {
+					eh, dr, eerr := b.opts.Crypt.DecryptingReader(pbr)
+					if eerr != nil {
+						resp.Body.Close()
+						return nil, store.Object{}, fmt.Errorf("gpmcstore: decrypt: %w", eerr)
+					}
+					obj.Size = eh.OrigSize
+					if eh.Name != "" {
+						obj.ContentType = contentTypeFor(eh.Name, gpmc.KindUnknown)
+					}
+					return multiReadCloser{r: dr, closers: []io.Closer{dr, resp.Body}}, obj, nil
+				}
+				return readCloser{r: pbr, c: resp.Body}, obj, nil
 			}
 			return readCloser{r: payload, c: resp.Body}, obj, nil
 		}
@@ -272,14 +294,31 @@ func (b *Backend) Put(ctx context.Context, key string, r io.Reader, _ int64, con
 
 	uploadPath := tmpPath
 	commitName := key
-	if head, herr := readHead(tmpPath, 512); herr == nil && disguise.ShouldWrap(contentType, key, head) {
-		wrapped, werr := wrapToTemp(b.opts.TempDir, tmpPath, key)
+	switch {
+	case b.opts.Crypt != nil && b.opts.Crypt.Enabled():
+		// Encrypt, then disguise the ciphertext (it is no longer valid media).
+		encPath, eerr := encryptToTemp(b.opts.TempDir, tmpPath, key, size, b.opts.Crypt)
+		if eerr != nil {
+			return store.Object{}, fmt.Errorf("gpmcstore: encrypt: %w", eerr)
+		}
+		defer os.Remove(encPath)
+		wrapped, werr := wrapToTemp(b.opts.TempDir, encPath, key)
 		if werr != nil {
 			return store.Object{}, fmt.Errorf("gpmcstore: disguise wrap: %w", werr)
 		}
 		defer os.Remove(wrapped)
 		uploadPath = wrapped
 		commitName = key + ".mp4"
+	default:
+		if head, herr := readHead(tmpPath, 512); herr == nil && disguise.ShouldWrap(contentType, key, head) {
+			wrapped, werr := wrapToTemp(b.opts.TempDir, tmpPath, key)
+			if werr != nil {
+				return store.Object{}, fmt.Errorf("gpmcstore: disguise wrap: %w", werr)
+			}
+			defer os.Remove(wrapped)
+			uploadPath = wrapped
+			commitName = key + ".mp4"
+		}
 	}
 
 	res, err := b.gp.UploadFile(ctx, uploadPath, gpmc.UploadOpts{
@@ -337,6 +376,24 @@ func readHead(path string, n int) ([]byte, error) {
 		return nil, err
 	}
 	return buf[:read], nil
+}
+
+func encryptToTemp(tempDir, srcPath, name string, size int64, crypt *mediacrypt.Manager) (string, error) {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+	out, err := os.CreateTemp(tempDir, "gpix-enc-*")
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	if err := crypt.Encrypt(out, src, size, name); err != nil {
+		os.Remove(out.Name())
+		return "", err
+	}
+	return out.Name(), nil
 }
 
 func wrapToTemp(tempDir, srcPath, name string) (string, error) {

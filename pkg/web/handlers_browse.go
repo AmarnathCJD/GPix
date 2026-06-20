@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"gpix/pkg/disguise"
 	"gpix/pkg/gpmc"
 )
 
@@ -30,24 +29,29 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]listingItem, 0, len(page.Items))
 	for _, it := range page.Items {
-		displayName := it.Filename
+		display, class, disguised := classifyItem(it.Filename, it.Kind)
 		displayKind := ""
-		isDisguised := false
-		if orig, ok := disguise.LooksLikeDisguisedFilename(it.Filename); ok {
-			displayName = orig
-			isDisguised = true
-			displayKind = describeKindForFilename(orig)
-		} else if it.Kind == gpmc.KindVideo {
-			displayKind = "Video"
-		} else if it.Kind == gpmc.KindPhoto {
+		switch class {
+		case classPhoto:
 			displayKind = "Photo"
+			if disguised {
+				displayKind = "Photo · encrypted"
+			}
+		case classVideo:
+			displayKind = "Video"
+			if disguised {
+				displayKind = "Video · encrypted"
+			}
+		default:
+			displayKind = describeKindForFilename(display)
 		}
 		items = append(items, listingItem{
 			MediaKey:    it.MediaKey,
 			Filename:    it.Filename,
-			DisplayName: displayName,
+			DisplayName: display,
 			Kind:        int(it.Kind),
-			IsDisguised: isDisguised,
+			Class:       string(class),
+			IsDisguised: class == classFile,
 			DisplayKind: displayKind,
 			SizeBytes:   it.SizeBytes,
 			Mtime:       it.Mtime,
@@ -78,7 +82,7 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 	}
 	absStream := scheme + "://" + r.Host + "/stream/" + streamTok
 
-	isVideo := false
+	var kind gpmc.MediaKind
 	filename := key
 	var sizeBytes int64
 	var mtime time.Time
@@ -89,7 +93,7 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		for _, it := range page.Items {
 			if it.MediaKey == key {
-				isVideo = it.Kind == gpmc.KindVideo
+				kind = it.Kind
 				filename = it.Filename
 				sizeBytes = it.SizeBytes
 				mtime = it.Mtime
@@ -98,21 +102,22 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	isDisguised := false
-	displayName := filename
+	display, class, disguised := classifyItem(filename, kind)
+	encrypted := disguised && class != classFile
 	displayKind := ""
-	if orig, ok := disguise.LooksLikeDisguisedFilename(filename); ok {
-		isDisguised = true
-		displayName = orig
-		displayKind = describeKindForFilename(orig)
-	} else if isVideo {
-		displayKind = "Video"
-	} else {
+	switch class {
+	case classPhoto:
 		displayKind = "Photo"
+	case classVideo:
+		displayKind = "Video"
+	default:
+		displayKind = describeKindForFilename(display)
 	}
 
+	// HLS adaptive streaming is only available for normal (non-encrypted) videos;
+	// encrypted videos are played directly from the decrypting /raw endpoint.
 	var qualities []qualityChoice
-	if isVideo && !isDisguised {
+	if class == classVideo && !encrypted {
 		if manifest, mErr := s.gp.GetStreamManifest(ctx, key, "hls"); mErr == nil {
 			variants := ParseMasterPlaylist(manifest)
 			for _, v := range variants {
@@ -137,10 +142,12 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "view", pageData{
 		User:         userFromCtx(r.Context()),
 		MediaKey:     key,
-		Filename:     displayName,
-		IsVideo:      isVideo && !isDisguised,
-		IsDisguised:  isDisguised,
-		OriginalName: displayName,
+		Filename:     display,
+		IsVideo:      class == classVideo,
+		IsDisguised:  class == classFile,
+		MediaClass:   string(class),
+		Encrypted:    encrypted,
+		OriginalName: display,
 		DisplayKind:  displayKind,
 		Mtime:        mtime,
 		SizeBytes:    sizeBytes,

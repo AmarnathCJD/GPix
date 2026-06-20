@@ -9,6 +9,9 @@ services:
       - "8080:8080"   # web UI
       - "9000:9000"   # S3-compatible gateway
       - "8081:8081"   # WebDAV gateway
+    # Set SERVER_URL so share links are absolute (optional):
+    # environment:
+    #   - SERVER_URL=https://photos.example.com
     volumes:
       # ./data must contain gpix-web.conf (and .env, unless you pass env vars
       # below). secret.key and gateways.json are created here on first run.

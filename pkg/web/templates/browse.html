@@ -29,9 +29,9 @@
 {{else}}
 <section class="media-grid" aria-label="Media library">
   {{range .Items}}
-  <a class="media-card{{if .IsDisguised}} media-card-file{{end}}" href="/view/{{.MediaKey}}" title="{{.DisplayName}}">
+  <a class="media-card{{if eq .Class "file"}} media-card-file{{end}}" href="/view/{{.MediaKey}}" title="{{.DisplayName}}">
     <div class="media-card-thumb">
-      {{if .IsDisguised}}
+      {{if eq .Class "file"}}
       <div class="file-thumb">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         <span class="file-ext">{{fileExt .DisplayName}}</span>
@@ -42,7 +42,7 @@
       </span>
       {{else}}
       <img loading="lazy" src="/thumb/{{.MediaKey}}?size=512" alt="{{.DisplayName}}">
-      {{if eq .Kind 2}}
+      {{if eq .Class "video"}}
       <span class="media-type">
         <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         Video

@@ -13,6 +13,7 @@ import (
 
 	"gpix/pkg/disguise"
 	"gpix/pkg/gpmc"
+	"gpix/pkg/mediacrypt"
 )
 
 func (s *Server) handleThumb(w http.ResponseWriter, r *http.Request) {
@@ -21,12 +22,30 @@ func (s *Server) handleThumb(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	s.serveThumb(w, r, key, thumbSize(r))
+}
+
+func thumbSize(r *http.Request) int {
 	size := 256
 	if v := r.URL.Query().Get("size"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			switch n {
 			case 64, 128, 256, 512:
 				size = n
+			}
+		}
+	}
+	return size
+}
+
+func (s *Server) serveThumb(w http.ResponseWriter, r *http.Request, key string, size int) {
+	// Encrypted/disguised photos have only a blank thumbnail on Google's side,
+	// so generate one from the decrypted original (cached on disk).
+	if s.lib != nil {
+		if it, ok, _ := s.lib.Get(r.Context(), key); ok {
+			display, class, disguised := classifyItem(it.Filename, it.Kind)
+			if disguised && class == classPhoto && s.serveGeneratedThumb(w, r, key, display, size) {
+				return
 			}
 		}
 	}
@@ -105,7 +124,10 @@ func (s *Server) handleRaw(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad token", http.StatusForbidden)
 		return
 	}
-	s.proxyDownload(w, r, key, true)
+	// inline=1 renders in-browser (img/video) rather than downloading; either
+	// way the bytes are un-disguised and decrypted as needed.
+	attachment := r.URL.Query().Get("inline") != "1"
+	s.proxyDownload(w, r, key, attachment)
 }
 
 func (s *Server) proxyDownload(w http.ResponseWriter, r *http.Request, mediaKey string, attachment bool) {
@@ -140,23 +162,33 @@ func (s *Server) proxyDownload(w http.ResponseWriter, r *http.Request, mediaKey 
 	}
 
 	br := bufio.NewReaderSize(resp.Body, 64*1024)
-	if attachment && resp.StatusCode == http.StatusOK {
+	// Always un-disguise / decrypt a disguised item, whether it's being
+	// downloaded (attachment) or rendered inline (img/video). Only the
+	// Content-Disposition differs.
+	if resp.StatusCode == http.StatusOK {
 		head, _ := br.Peek(8192)
 		if disguise.LooksDisguised(head) {
 			hdr, payload, err := disguise.Extract(br)
 			if err == nil {
-				origName := hdr.Filename
-				if origName == "" {
-					origName = "download.bin"
+				// The unwrapped payload may itself be encrypted.
+				if s.crypt != nil {
+					pbr := bufio.NewReader(payload)
+					if ph, _ := pbr.Peek(len(mediacrypt.Magic)); mediacrypt.HasMagic(ph) {
+						eh, dr, derr := s.crypt.DecryptingReader(pbr)
+						if derr != nil {
+							http.Error(w, "decrypt: "+derr.Error(), http.StatusBadGateway)
+							return
+						}
+						writeMediaHeaders(w, eh.Name, eh.OrigSize, attachment)
+						_, _ = io.Copy(w, dr)
+						dr.Close()
+						return
+					}
+					writeMediaHeaders(w, hdr.Filename, hdr.PayloadSize, attachment)
+					_, _ = io.Copy(w, pbr)
+					return
 				}
-				w.Header().Set("Content-Type", disguiseMIME(origName))
-				w.Header().Set("Content-Length", strconv.FormatInt(hdr.PayloadSize, 10))
-				disp := mime.FormatMediaType("attachment", map[string]string{"filename": origName})
-				if disp == "" {
-					disp = `attachment; filename="` + origName + `"`
-				}
-				w.Header().Set("Content-Disposition", disp)
-				w.WriteHeader(http.StatusOK)
+				writeMediaHeaders(w, hdr.Filename, hdr.PayloadSize, attachment)
 				_, _ = io.Copy(w, payload)
 				return
 			}
@@ -177,6 +209,26 @@ func (s *Server) proxyDownload(w http.ResponseWriter, r *http.Request, mediaKey 
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, br)
+}
+
+func writeMediaHeaders(w http.ResponseWriter, origName string, size int64, attachment bool) {
+	if origName == "" {
+		origName = "download.bin"
+	}
+	w.Header().Set("Content-Type", disguiseMIME(origName))
+	if size >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+	dispType := "inline"
+	if attachment {
+		dispType = "attachment"
+	}
+	disp := mime.FormatMediaType(dispType, map[string]string{"filename": origName})
+	if disp == "" {
+		disp = dispType + `; filename="` + origName + `"`
+	}
+	w.Header().Set("Content-Disposition", disp)
+	w.WriteHeader(http.StatusOK)
 }
 
 func disguiseMIME(filename string) string {

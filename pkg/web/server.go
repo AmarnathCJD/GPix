@@ -10,10 +10,15 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"gpix/pkg/gpmc"
 	"gpix/pkg/gwcreds"
+	"gpix/pkg/library"
+	"gpix/pkg/mediacrypt"
+	"gpix/pkg/share"
 )
 
 //go:embed templates/*.html templates/partials/*.html
@@ -25,7 +30,10 @@ var staticFS embed.FS
 type Server struct {
 	cfg            Config
 	gp             *gpmc.Client
+	lib            *library.Cache
 	gw             *gwcreds.Store
+	crypt          *mediacrypt.Manager
+	share          *share.Store
 	log            *slog.Logger
 	httpSrv        *http.Server
 	urlCache       *urlCache
@@ -34,27 +42,43 @@ type Server struct {
 	mediaSignKey   []byte
 	tempSemaphore  chan struct{}
 	pageTmpls      map[string]*template.Template
+	thumbDir       string
+	thumbLocks     sync.Map
 }
 
-// New builds the web server. gw is the shared gateway-credentials store used by
-// the connections settings page; it may be nil to disable that page.
-func New(cfg Config, gp *gpmc.Client, gw *gwcreds.Store, log *slog.Logger) (*Server, error) {
+// New builds the web server. lib is the shared library cache, gw the gateway-
+// credentials store, crypt the media-encryption manager, and sh the share store
+// backing the public /s/ links. Any of them may be nil to disable the related
+// feature.
+func New(cfg Config, gp *gpmc.Client, lib *library.Cache, gw *gwcreds.Store, crypt *mediacrypt.Manager, sh *share.Store, log *slog.Logger) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
 	}
 	if len(cfg.SecretKey) < 32 {
 		return nil, errors.New("web: SecretKey must be at least 32 bytes")
 	}
+
+	thumbBase := cfg.DataDir
+	if thumbBase == "" {
+		thumbBase = cfg.TempDir
+	}
+	thumbDir := filepath.Join(thumbBase, "gpix-thumbcache")
+	_ = os.MkdirAll(thumbDir, 0o700)
+
 	s := &Server{
 		cfg:            cfg,
 		gp:             gp,
+		lib:            lib,
 		gw:             gw,
+		crypt:          crypt,
+		share:          sh,
 		log:            log,
 		urlCache:       newURLCache(gp),
 		progressBus:    newProgressBus(),
 		sessionSignKey: deriveKey(cfg.SecretKey, "session"),
 		mediaSignKey:   deriveKey(cfg.SecretKey, "media"),
 		tempSemaphore:  make(chan struct{}, cfg.MaxConcurrentUploads),
+		thumbDir:       thumbDir,
 	}
 	if err := s.loadTemplates(); err != nil {
 		return nil, fmt.Errorf("web: load templates: %w", err)

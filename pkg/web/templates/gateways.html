@@ -34,6 +34,29 @@
 
 <div class="gw-grid">
 
+  <!-- Encryption -->
+  {{if $g.EncryptionAvailable}}
+  <section class="panel gw-panel">
+    <div class="gw-row" style="justify-content:space-between">
+      <h2>Media encryption</h2>
+      {{if $g.EncryptionEnabled}}<span class="gw-status on">● encrypting new uploads</span>{{else}}<span class="gw-status off">○ off</span>{{end}}
+    </div>
+    <p class="gw-hint">When on, gpix encrypts each upload (image, video, or file) with a key only you hold, then disguises the ciphertext as a video. Google — and anyone else without your key — only ever sees an opaque 1-second clip. Encrypted items show as file cards here (no Google preview/thumbnail), and download decrypted through the web UI, S3, and WebDAV.</p>
+
+    <div class="gw-row"><label>Key fingerprint</label><input class="input" readonly value="{{$g.EncryptionFingerprint}}"><button class="btn" type="button" data-copy>Copy</button></div>
+
+    <div class="gw-actions">
+      <form method="POST" action="/settings/gateways/encryption">
+        <input type="hidden" name="_csrf" value="{{.CSRF}}">
+        <input type="hidden" name="enable" value="{{if $g.EncryptionEnabled}}false{{else}}true{{end}}">
+        <button class="btn btn-primary" type="submit">{{if $g.EncryptionEnabled}}Turn encryption off{{else}}Turn encryption on{{end}}</button>
+      </form>
+      <a class="btn" href="/settings/gateways/encryption-key" download>Download key backup</a>
+    </div>
+    <p class="gw-hint" style="margin-top:.6rem"><strong>Back up your key.</strong> It lives in <code>encryption.key</code> next to your config. If you lose it, encrypted items are <strong>permanently unreadable</strong> — gpix cannot recover them, and neither can Google. Turning encryption off does not touch existing encrypted items; they still open with the same key.</p>
+  </section>
+  {{end}}
+
   <!-- S3 -->
   <section class="panel gw-panel">
     <div class="gw-row" style="justify-content:space-between">

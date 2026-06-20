@@ -63,6 +63,35 @@ func (s *Server) verifyMedia(tok string) (string, error) {
 	return mediaKey, nil
 }
 
+// signShareAccess issues a short-lived token proving the holder entered the
+// correct password for a given share. It is stored in a cookie scoped to that
+// share's URL so a recipient is not re-prompted for every asset.
+func (s *Server) signShareAccess(token string, ttl time.Duration) string {
+	exp := time.Now().Add(ttl).Unix()
+	m := hmac.New(sha256.New, s.mediaSignKey)
+	m.Write([]byte("share|" + token + "|" + strconv.FormatInt(exp, 10)))
+	mac := m.Sum(nil)[:16]
+	return fmt.Sprintf("%d.%s", exp, base64.RawURLEncoding.EncodeToString(mac))
+}
+
+func (s *Server) verifyShareAccess(token, val string) bool {
+	parts := strings.SplitN(val, ".", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	exp, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || time.Now().Unix() > exp {
+		return false
+	}
+	mac, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+	m := hmac.New(sha256.New, s.mediaSignKey)
+	m.Write([]byte("share|" + token + "|" + parts[0]))
+	return hmac.Equal(m.Sum(nil)[:16], mac)
+}
+
 func (s *Server) signSession(username string, ttl time.Duration) string {
 	now := time.Now().Unix()
 	exp := time.Now().Add(ttl).Unix()

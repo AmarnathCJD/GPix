@@ -38,7 +38,7 @@ func (s *Server) loadTemplates() error {
 			return string(out)
 		},
 	}
-	pages := []string{"login", "browse", "view", "upload", "error", "gateways"}
+	pages := []string{"login", "browse", "view", "upload", "error", "gateways", "shares", "share_public"}
 	s.pageTmpls = make(map[string]*template.Template, len(pages))
 	layout, err := tmplFS.ReadFile("templates/layout.html")
 	if err != nil {
@@ -73,6 +73,8 @@ type pageData struct {
 	MediaKey     string
 	IsVideo      bool
 	IsDisguised  bool
+	MediaClass   string // "photo" | "video" | "file"
+	Encrypted    bool
 	OriginalName string
 	DisplayKind  string
 	Mtime        time.Time
@@ -84,6 +86,31 @@ type pageData struct {
 	HasQualities bool
 
 	Gateways *gatewaysView
+
+	Shares      []shareItem
+	SharePublic *sharePublicView
+}
+
+type shareItem struct {
+	Token        string
+	URL          string
+	FileName     string
+	IsVideo      bool
+	HasPassword  bool
+	ExpiresLabel string
+	Downloads    int64
+	MaxDownloads int64
+	CreatedAt    time.Time
+}
+
+type sharePublicView struct {
+	Token         string
+	FileName      string
+	IsVideo       bool
+	NeedsPassword bool
+	Expired       bool
+	AllowOriginal bool
+	Error         string
 }
 
 // gatewaysView models the Connections settings page.
@@ -101,6 +128,10 @@ type gatewaysView struct {
 	WebDAVUsername string
 	WebDAVPassword string
 	HasWebDAVPass  bool
+
+	EncryptionAvailable   bool
+	EncryptionEnabled     bool
+	EncryptionFingerprint string
 
 	// JustGenerated is "s3" or "webdav" right after a regenerate, so the page
 	// can reveal the new secret with a "save this now" prompt. Empty otherwise.
@@ -152,6 +183,7 @@ type listingItem struct {
 	Filename    string
 	DisplayName string
 	Kind        int
+	Class       string // "photo" | "video" | "file"
 	IsDisguised bool
 	DisplayKind string
 	SizeBytes   int64
