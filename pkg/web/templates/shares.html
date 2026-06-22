@@ -24,11 +24,11 @@
 <section class="panel">
 {{if .Shares}}
   <table class="sh-table">
-    <thead><tr><th>File</th><th>Link</th><th>Protection</th><th>Downloads</th><th></th></tr></thead>
+    <thead><tr><th>Share</th><th>Link</th><th>Protection</th><th>Downloads</th><th></th></tr></thead>
     <tbody>
     {{range .Shares}}
       <tr>
-        <td>{{.FileName}}{{if .IsVideo}} <span class="sh-badge">video</span>{{end}}</td>
+        <td>{{.Title}}{{if gt .Count 1}} <span class="sh-badge">{{.Count}} items</span>{{end}}</td>
         <td>
           <div class="sh-url">
             <input class="input" readonly value="{{.URL}}">

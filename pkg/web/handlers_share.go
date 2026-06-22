@@ -25,6 +25,9 @@ func shareCookieName(token string) string { return "gpix_share_" + token }
 
 // --- authenticated management ---
 
+// handleShareCreate accepts one or more selected media keys (repeated `key`
+// form fields) and creates a single share link covering all of them. Item
+// names and types are resolved server-side from the library cache.
 func (s *Server) handleShareCreate(w http.ResponseWriter, r *http.Request) {
 	if s.share == nil {
 		http.Error(w, "sharing not enabled", http.StatusNotFound)
@@ -34,11 +37,24 @@ func (s *Server) handleShareCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	key := r.FormValue("key")
-	if key == "" {
-		http.Error(w, "missing media key", http.StatusBadRequest)
+	keys := r.Form["key"]
+	if len(keys) == 0 {
+		http.Error(w, "no items selected", http.StatusBadRequest)
 		return
 	}
+
+	items := make([]share.ShareItem, 0, len(keys))
+	for _, k := range keys {
+		name, isVideo := k, false
+		if s.lib != nil {
+			if it, ok, _ := s.lib.Get(r.Context(), k); ok {
+				display, class, _ := classifyItem(it.Filename, it.Kind)
+				name, isVideo = display, class == classVideo
+			}
+		}
+		items = append(items, share.ShareItem{MediaKey: k, FileName: name, IsVideo: isVideo})
+	}
+
 	var ttl time.Duration
 	if h := r.FormValue("expiry_hours"); h != "" {
 		if n, err := strconv.Atoi(h); err == nil && n > 0 {
@@ -51,16 +67,14 @@ func (s *Server) handleShareCreate(w http.ResponseWriter, r *http.Request) {
 			maxDl = n
 		}
 	}
-	_, err := s.share.Create(r.Context(), share.CreateParams{
-		MediaKey:      key,
-		FileName:      r.FormValue("filename"),
-		IsVideo:       r.FormValue("is_video") == "1",
+	if _, err := s.share.Create(r.Context(), share.CreateParams{
+		Title:         r.FormValue("title"),
+		Items:         items,
 		Password:      r.FormValue("password"),
 		TTL:           ttl,
 		MaxDownloads:  maxDl,
 		AllowOriginal: r.FormValue("allow_original") != "0",
-	})
-	if err != nil {
+	}); err != nil {
 		s.log.Error("share create", "err", err)
 		http.Error(w, "could not create share: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -81,11 +95,19 @@ func (s *Server) handleSharesList(w http.ResponseWriter, r *http.Request) {
 	base := s.baseURL(r)
 	items := make([]shareItem, 0, len(shares))
 	for _, sh := range shares {
+		title := sh.Title
+		if title == "" {
+			if len(sh.Items) == 1 {
+				title = sh.Items[0].FileName
+			} else if len(sh.Items) > 1 {
+				title = sh.Items[0].FileName + " +" + strconv.Itoa(len(sh.Items)-1) + " more"
+			}
+		}
 		items = append(items, shareItem{
 			Token:        sh.Token,
 			URL:          base + "/s/" + sh.Token,
-			FileName:     sh.FileName,
-			IsVideo:      sh.IsVideo,
+			Title:        title,
+			Count:        len(sh.Items),
 			HasPassword:  sh.HasPassword,
 			ExpiresLabel: expiresLabel(sh.ExpiresAt),
 			Downloads:    sh.Downloads,
@@ -93,11 +115,7 @@ func (s *Server) handleSharesList(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:    sh.CreatedAt,
 		})
 	}
-	s.render(w, "shares", pageData{
-		User:   userFromCtx(r.Context()),
-		Title:  "Shares",
-		Shares: items,
-	})
+	s.render(w, "shares", pageData{User: userFromCtx(r.Context()), Title: "Shares", Shares: items})
 }
 
 func (s *Server) handleShareRevoke(w http.ResponseWriter, r *http.Request) {
@@ -105,8 +123,7 @@ func (s *Server) handleShareRevoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sharing not enabled", http.StatusNotFound)
 		return
 	}
-	token := r.PathValue("token")
-	if token != "" {
+	if token := r.PathValue("token"); token != "" {
 		_ = s.share.Delete(r.Context(), token)
 	}
 	http.Redirect(w, r, "/settings/shares", http.StatusSeeOther)
@@ -124,8 +141,6 @@ func expiresLabel(t time.Time) string {
 
 // --- public share endpoints (no session) ---
 
-// shareAuthorized reports whether the request may view the share: shares without
-// a password are always open; password-protected shares require a valid cookie.
 func (s *Server) shareAuthorized(r *http.Request, sh share.Share) bool {
 	if !sh.HasPassword {
 		return true
@@ -145,7 +160,7 @@ func (s *Server) loadShare(w http.ResponseWriter, r *http.Request) (share.Share,
 		return share.Share{}, false
 	}
 	if !sh.Active(time.Now()) {
-		s.render(w, "share_public", pageData{SharePublic: &sharePublicView{Token: sh.Token, FileName: sh.FileName, Expired: true}})
+		s.render(w, "share_public", pageData{SharePublic: &sharePublicView{Token: sh.Token, Title: sh.Title, Expired: true}})
 		return share.Share{}, false
 	}
 	return sh, true
@@ -160,14 +175,20 @@ func (s *Server) handleSharePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	view := &sharePublicView{
-		Token:         sh.Token,
-		FileName:      sh.FileName,
-		IsVideo:       sh.IsVideo,
-		AllowOriginal: sh.AllowOriginal,
-	}
+	view := &sharePublicView{Token: sh.Token, Title: sh.Title, AllowOriginal: sh.AllowOriginal}
 	if !s.shareAuthorized(r, sh) {
 		view.NeedsPassword = true
+		s.render(w, "share_public", pageData{SharePublic: view})
+		return
+	}
+	for i, it := range sh.Items {
+		view.Items = append(view.Items, sharePublicItem{
+			Index:    i,
+			Name:     it.FileName,
+			IsVideo:  it.IsVideo,
+			ThumbURL: "/s/" + sh.Token + "/thumb/" + strconv.Itoa(i),
+			RawURL:   "/s/" + sh.Token + "/raw/" + strconv.Itoa(i),
+		})
 	}
 	s.render(w, "share_public", pageData{SharePublic: view})
 }
@@ -187,8 +208,7 @@ func (s *Server) handleSharePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if !sh.VerifyPassword(r.FormValue("password")) {
 		s.render(w, "share_public", pageData{SharePublic: &sharePublicView{
-			Token: sh.Token, FileName: sh.FileName, IsVideo: sh.IsVideo,
-			NeedsPassword: true, Error: "Incorrect password.",
+			Token: sh.Token, Title: sh.Title, NeedsPassword: true, Error: "Incorrect password.",
 		}})
 		return
 	}
@@ -203,17 +223,31 @@ func (s *Server) handleSharePassword(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/s/"+sh.Token, http.StatusSeeOther)
 }
 
+// shareItemByIndex loads a share and resolves one item, enforcing
+// active + authorized access.
+func (s *Server) shareItemByIndex(r *http.Request) (share.Share, share.ShareItem, bool) {
+	sh, err := s.share.Get(r.Context(), r.PathValue("token"))
+	if err != nil || !sh.Active(time.Now()) || !s.shareAuthorized(r, sh) {
+		return share.Share{}, share.ShareItem{}, false
+	}
+	idx, err := strconv.Atoi(r.PathValue("idx"))
+	if err != nil || idx < 0 || idx >= len(sh.Items) {
+		return share.Share{}, share.ShareItem{}, false
+	}
+	return sh, sh.Items[idx], true
+}
+
 func (s *Server) handleShareThumb(w http.ResponseWriter, r *http.Request) {
 	if s.share == nil {
 		http.NotFound(w, r)
 		return
 	}
-	sh, err := s.share.Get(r.Context(), r.PathValue("token"))
-	if err != nil || !sh.Active(time.Now()) || !s.shareAuthorized(r, sh) {
+	_, item, ok := s.shareItemByIndex(r)
+	if !ok {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	s.serveThumb(w, r, sh.MediaKey, thumbSize(r))
+	s.serveThumb(w, r, item.MediaKey, thumbSize(r))
 }
 
 func (s *Server) handleShareRaw(w http.ResponseWriter, r *http.Request) {
@@ -221,15 +255,18 @@ func (s *Server) handleShareRaw(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	sh, err := s.share.Get(r.Context(), r.PathValue("token"))
-	if err != nil || !sh.Active(time.Now()) || !s.shareAuthorized(r, sh) {
+	sh, item, ok := s.shareItemByIndex(r)
+	if !ok {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if !sh.AllowOriginal {
+	if !sh.AllowOriginal && r.URL.Query().Get("inline") != "1" {
 		http.Error(w, "download disabled for this share", http.StatusForbidden)
 		return
 	}
-	_ = s.share.RecordDownload(r.Context(), sh.Token)
-	s.proxyDownload(w, r, sh.MediaKey, true)
+	if r.URL.Query().Get("inline") != "1" {
+		_ = s.share.RecordDownload(r.Context(), sh.Token)
+	}
+	attachment := r.URL.Query().Get("inline") != "1"
+	s.proxyDownload(w, r, item.MediaKey, attachment)
 }

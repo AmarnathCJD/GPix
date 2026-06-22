@@ -14,8 +14,20 @@ type mediaClass string
 const (
 	classPhoto mediaClass = "photo"
 	classVideo mediaClass = "video"
+	classDoc   mediaClass = "doc"
 	classFile  mediaClass = "file"
 )
+
+// textExts are document/text formats gpix renders to a readable image while
+// keeping the original downloadable.
+var textExts = map[string]bool{
+	".txt": true, ".md": true, ".markdown": true, ".text": true, ".log": true,
+	".csv": true, ".tsv": true, ".json": true, ".yaml": true, ".yml": true,
+	".ini": true, ".conf": true, ".cfg": true, ".toml": true, ".xml": true,
+	".html": true, ".htm": true, ".css": true, ".js": true, ".ts": true,
+	".go": true, ".py": true, ".rb": true, ".rs": true, ".c": true, ".cpp": true,
+	".h": true, ".java": true, ".sh": true, ".sql": true, ".env": true, ".rst": true,
+}
 
 var imageExts = map[string]bool{
 	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
@@ -45,6 +57,8 @@ func classifyItem(filename string, kind gpmc.MediaKind) (display string, class m
 			return orig, classPhoto, true
 		case videoExts[ext]:
 			return orig, classVideo, true
+		case textExts[ext]:
+			return orig, classDoc, true
 		default:
 			return orig, classFile, true
 		}

@@ -30,7 +30,7 @@ func thumbSize(r *http.Request) int {
 	if v := r.URL.Query().Get("size"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			switch n {
-			case 64, 128, 256, 512:
+			case 64, 128, 256, 512, 1024, 2048:
 				size = n
 			}
 		}
@@ -39,13 +39,36 @@ func thumbSize(r *http.Request) int {
 }
 
 func (s *Server) serveThumb(w http.ResponseWriter, r *http.Request, key string, size int) {
-	// Encrypted/disguised photos have only a blank thumbnail on Google's side,
-	// so generate one from the decrypted original (cached on disk).
+	// Encrypted/disguised items have only a blank thumbnail on Google's side, so
+	// gpix renders one locally (photos from the decrypted original, documents as
+	// a text image) and caches it. This must never block the grid: a cache hit is
+	// served instantly; otherwise the grid request returns Google's fast (blank)
+	// thumbnail and the real one is generated in the background. Only the
+	// single-item view (large size) generates synchronously.
 	if s.lib != nil {
-		if it, ok, _ := s.lib.Get(r.Context(), key); ok {
+		if it, ok := s.lib.Peek(key); ok {
 			display, class, disguised := classifyItem(it.Filename, it.Kind)
-			if disguised && class == classPhoto && s.serveGeneratedThumb(w, r, key, display, size) {
-				return
+			canGen := disguised && (class == classDoc || (class == classPhoto && canGenerateThumb(display)))
+			if canGen {
+				kind := "photo"
+				if class == classDoc {
+					kind = "doc"
+				}
+				if data, ct, cached := s.cachedThumbFile(key, size, kind); cached {
+					writeThumb(w, data, ct)
+					return
+				}
+				if size >= 1024 { // single-item view: generate now
+					ctx, cancel := withTimeout(r.Context(), 90*time.Second)
+					data, ct, err := s.thumbBytes(ctx, key, display, size, kind)
+					cancel()
+					if err == nil {
+						writeThumb(w, data, ct)
+						return
+					}
+				} else { // grid: never block — fill in the background
+					s.queueThumb(key, display, size, kind)
+				}
 			}
 		}
 	}

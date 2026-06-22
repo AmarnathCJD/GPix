@@ -12,6 +12,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /login", s.handleLoginSubmit)
 	mux.HandleFunc("POST /logout", s.requireSession(s.handleLogout))
 
+	mux.HandleFunc("GET /auth/logto/login", s.handleLogtoLogin)
+	mux.HandleFunc("GET /auth/logto/callback", s.handleLogtoCallback)
+
 	mux.HandleFunc("GET /{$}", s.requireSession(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/browse", http.StatusSeeOther)
 	}))
@@ -40,8 +43,8 @@ func (s *Server) routes() http.Handler {
 	// Public share links (no session).
 	mux.HandleFunc("GET /s/{token}", s.handleSharePage)
 	mux.HandleFunc("POST /s/{token}", s.handleSharePassword)
-	mux.HandleFunc("GET /s/{token}/thumb", s.handleShareThumb)
-	mux.HandleFunc("GET /s/{token}/raw", s.handleShareRaw)
+	mux.HandleFunc("GET /s/{token}/thumb/{idx}", s.handleShareThumb)
+	mux.HandleFunc("GET /s/{token}/raw/{idx}", s.handleShareRaw)
 
 	sub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(sub)))

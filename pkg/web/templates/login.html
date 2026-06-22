@@ -32,6 +32,12 @@
       </label>
       <button class="btn btn-primary btn-large btn-block" type="submit">Sign in</button>
     </form>
+    {{if .LogtoEnabled}}
+    <div class="login-divider" style="display:flex;align-items:center;gap:.6rem;margin:1.1rem 0;opacity:.6;font-size:.8rem">
+      <span style="flex:1;height:1px;background:currentColor"></span>or<span style="flex:1;height:1px;background:currentColor"></span>
+    </div>
+    <a class="btn btn-large btn-block" href="/auth/logto/login" style="display:flex;justify-content:center">Sign in with Logto</a>
+    {{end}}
   </section>
 </div>
 {{end}}

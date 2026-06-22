@@ -42,6 +42,8 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 			if disguised {
 				displayKind = "Video · encrypted"
 			}
+		case classDoc:
+			displayKind = describeKindForFilename(display)
 		default:
 			displayKind = describeKindForFilename(display)
 		}

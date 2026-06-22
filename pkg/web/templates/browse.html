@@ -1,21 +1,39 @@
 {{define "browse"}}{{template "layout" .}}{{end}}
 {{define "title"}}Library · gpix{{end}}
 {{define "bodyclass"}}page-library{{end}}
+{{define "head"}}
+<style>
+  .select-check{position:absolute;top:8px;left:8px;width:22px;height:22px;border-radius:50%;border:2px solid #fff;background:rgba(0,0,0,.35);display:none;z-index:2}
+  body.select-mode .select-check{display:block}
+  body.select-mode .media-card{cursor:pointer}
+  .media-card{position:relative}
+  .media-card.selected{outline:3px solid #2d7; outline-offset:2px}
+  .media-card.selected .select-check{background:#2d7;border-color:#2d7}
+  .media-card.selected .select-check::after{content:"✓";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:700}
+  #share-bar{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;display:none;align-items:center;gap:.75rem;padding:.6rem 1rem;border-radius:999px;background:var(--surface,#1b1b1b);color:#fff;box-shadow:0 6px 24px rgba(0,0,0,.3);z-index:50}
+  #share-bar.show{display:flex}
+  #share-dialog{border:none;border-radius:14px;padding:0;max-width:420px;width:92%}
+  #share-dialog::backdrop{background:rgba(0,0,0,.5)}
+  .share-dialog-inner{padding:1.3rem}
+  .share-dialog-inner .field{display:flex;flex-direction:column;gap:.25rem;font-size:.82rem;margin-bottom:.6rem}
+</style>
+{{end}}
 {{define "content"}}
 <section class="page-heading">
   <div>
     <span class="eyebrow">Your collection</span>
     <h1>Media library</h1>
-    <p>Browse photos, videos, and disguised files stored on this server.</p>
+    <p>Browse photos, videos, and documents stored on this server.</p>
   </div>
-  {{if .NextCursor}}
   <div class="page-actions">
+    <button id="select-toggle" class="btn" type="button">Select</button>
+    {{if .NextCursor}}
     <a class="btn" href="/browse?cursor={{.NextCursor}}">
       <span>Next page</span>
       <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
     </a>
+    {{end}}
   </div>
-  {{end}}
 </section>
 {{if not .Items}}
 <section class="empty-state">
@@ -29,7 +47,8 @@
 {{else}}
 <section class="media-grid" aria-label="Media library">
   {{range .Items}}
-  <a class="media-card{{if eq .Class "file"}} media-card-file{{end}}" href="/view/{{.MediaKey}}" title="{{.DisplayName}}">
+  <a class="media-card{{if eq .Class "file"}} media-card-file{{end}}" href="/view/{{.MediaKey}}" data-key="{{.MediaKey}}" title="{{.DisplayName}}">
+    <span class="select-check" aria-hidden="true"></span>
     <div class="media-card-thumb">
       {{if eq .Class "file"}}
       <div class="file-thumb">
@@ -48,6 +67,12 @@
         Video
       </span>
       {{end}}
+      {{if eq .Class "doc"}}
+      <span class="media-type media-type-file">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        {{.DisplayKind}}
+      </span>
+      {{end}}
       {{end}}
     </div>
     <div class="media-card-body">
@@ -62,4 +87,77 @@
   {{end}}
 </section>
 {{end}}
+
+<div id="share-bar">
+  <span><strong id="share-count">0</strong> selected</span>
+  <button id="share-open" class="btn btn-primary" type="button">Share</button>
+</div>
+
+<dialog id="share-dialog">
+  <form class="share-dialog-inner" method="POST" action="/share/create">
+    <h2 style="margin:0 0 .8rem">Create share link</h2>
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <div id="share-keys"></div>
+    <label class="field"><span>Title (optional)</span><input class="input" type="text" name="title" placeholder="Shared photos"></label>
+    <label class="field"><span>Password (optional)</span><input class="input" type="text" name="password" autocomplete="off" placeholder="No password"></label>
+    <label class="field"><span>Expires in hours (optional)</span><input class="input" type="number" name="expiry_hours" min="1" placeholder="Never"></label>
+    <label class="field"><span>Max downloads (optional)</span><input class="input" type="number" name="max_downloads" min="1" placeholder="Unlimited"></label>
+    <label class="field"><span>Access</span>
+      <select class="input" name="allow_original">
+        <option value="1">Allow full-resolution download</option>
+        <option value="0">View only</option>
+      </select>
+    </label>
+    <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:.5rem">
+      <button class="btn" type="button" id="share-cancel">Cancel</button>
+      <button class="btn btn-primary" type="submit">Create link</button>
+    </div>
+  </form>
+</dialog>
+{{end}}
+{{define "scripts"}}
+<script>
+(function(){
+  var selectMode=false, selected=new Set();
+  var grid=document.querySelector('.media-grid');
+  var toggle=document.getElementById('select-toggle');
+  var bar=document.getElementById('share-bar');
+  var countEl=document.getElementById('share-count');
+  var dialog=document.getElementById('share-dialog');
+  if(!grid||!toggle)return;
+
+  function updateBar(){countEl.textContent=selected.size;bar.classList.toggle('show',selectMode&&selected.size>0);}
+  function clearSel(){document.querySelectorAll('.media-card.selected').forEach(function(c){c.classList.remove('selected');});selected.clear();}
+
+  toggle.addEventListener('click',function(){
+    selectMode=!selectMode;
+    document.body.classList.toggle('select-mode',selectMode);
+    toggle.textContent=selectMode?'Cancel':'Select';
+    if(!selectMode)clearSel();
+    updateBar();
+  });
+
+  grid.addEventListener('click',function(e){
+    if(!selectMode)return;
+    var card=e.target.closest('.media-card');
+    if(!card)return;
+    e.preventDefault();
+    var key=card.dataset.key;
+    if(selected.has(key)){selected.delete(key);card.classList.remove('selected');}
+    else{selected.add(key);card.classList.add('selected');}
+    updateBar();
+  });
+
+  document.getElementById('share-open').addEventListener('click',function(){
+    if(selected.size===0)return;
+    var box=document.getElementById('share-keys');
+    box.innerHTML='';
+    selected.forEach(function(k){var i=document.createElement('input');i.type='hidden';i.name='key';i.value=k;box.appendChild(i);});
+    if(dialog.showModal)dialog.showModal();else dialog.setAttribute('open','');
+  });
+  document.getElementById('share-cancel').addEventListener('click',function(){
+    if(dialog.close)dialog.close();else dialog.removeAttribute('open');
+  });
+})();
+</script>
 {{end}}

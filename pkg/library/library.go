@@ -185,6 +185,16 @@ func (c *Cache) Get(ctx context.Context, mediaKey string) (gpmc.MediaItem, bool,
 	return it, ok, nil
 }
 
+// Peek returns an item from whatever is currently in memory WITHOUT triggering
+// a refresh. Use it on hot paths (e.g. per-thumbnail requests) that must never
+// block on a full library listing; a miss just means "not known yet".
+func (c *Cache) Peek(mediaKey string) (gpmc.MediaItem, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	it, ok := c.byKey[mediaKey]
+	return it, ok
+}
+
 // Invalidate forces the next access to refresh (call after uploads/deletes).
 func (c *Cache) Invalidate() {
 	c.mu.Lock()

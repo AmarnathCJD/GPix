@@ -18,7 +18,9 @@ import (
 	"gpix/pkg/gwcreds"
 	"gpix/pkg/library"
 	"gpix/pkg/mediacrypt"
+	"gpix/pkg/oidc"
 	"gpix/pkg/share"
+	"gpix/pkg/users"
 )
 
 //go:embed templates/*.html templates/partials/*.html
@@ -34,6 +36,8 @@ type Server struct {
 	gw             *gwcreds.Store
 	crypt          *mediacrypt.Manager
 	share          *share.Store
+	oidc           *oidc.Client
+	users          *users.Store
 	log            *slog.Logger
 	httpSrv        *http.Server
 	urlCache       *urlCache
@@ -44,13 +48,14 @@ type Server struct {
 	pageTmpls      map[string]*template.Template
 	thumbDir       string
 	thumbLocks     sync.Map
+	thumbSem       chan struct{} // bounds background thumbnail generation
 }
 
 // New builds the web server. lib is the shared library cache, gw the gateway-
 // credentials store, crypt the media-encryption manager, and sh the share store
 // backing the public /s/ links. Any of them may be nil to disable the related
 // feature.
-func New(cfg Config, gp *gpmc.Client, lib *library.Cache, gw *gwcreds.Store, crypt *mediacrypt.Manager, sh *share.Store, log *slog.Logger) (*Server, error) {
+func New(cfg Config, gp *gpmc.Client, lib *library.Cache, gw *gwcreds.Store, crypt *mediacrypt.Manager, sh *share.Store, oc *oidc.Client, us *users.Store, log *slog.Logger) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -72,6 +77,8 @@ func New(cfg Config, gp *gpmc.Client, lib *library.Cache, gw *gwcreds.Store, cry
 		gw:             gw,
 		crypt:          crypt,
 		share:          sh,
+		oidc:           oc,
+		users:          us,
 		log:            log,
 		urlCache:       newURLCache(gp),
 		progressBus:    newProgressBus(),
@@ -79,6 +86,7 @@ func New(cfg Config, gp *gpmc.Client, lib *library.Cache, gw *gwcreds.Store, cry
 		mediaSignKey:   deriveKey(cfg.SecretKey, "media"),
 		tempSemaphore:  make(chan struct{}, cfg.MaxConcurrentUploads),
 		thumbDir:       thumbDir,
+		thumbSem:       make(chan struct{}, 3),
 	}
 	if err := s.loadTemplates(); err != nil {
 		return nil, fmt.Errorf("web: load templates: %w", err)

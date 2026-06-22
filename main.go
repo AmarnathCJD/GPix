@@ -25,9 +25,11 @@ import (
 	"gpix/pkg/gwcreds"
 	"gpix/pkg/library"
 	"gpix/pkg/mediacrypt"
+	"gpix/pkg/oidc"
 	"gpix/pkg/s3"
 	"gpix/pkg/share"
 	"gpix/pkg/store/gpmcstore"
+	"gpix/pkg/users"
 	"gpix/pkg/web"
 )
 
@@ -257,7 +259,34 @@ func startWeb(ctx context.Context, log *slog.Logger, auth, cfgPath, secretPath, 
 	}
 	defer shareStore.Close()
 
-	srv, err := web.New(cfg, gp, lib, gw, crypt, shareStore, log)
+	// Optional Logto / OIDC login with email allowlist + max-users cap.
+	var (
+		oc *oidc.Client
+		us *users.Store
+	)
+	if cfg.LogtoEnabled() {
+		redirect := cfg.LogtoRedirect
+		if redirect == "" {
+			if cfg.ServerURL == "" {
+				return fmt.Errorf("logto: set server_url (or logto_redirect) so the OAuth callback URL is known")
+			}
+			redirect = cfg.ServerURL + "/auth/logto/callback"
+		}
+		oc = oidc.New(oidc.Config{
+			Issuer:       cfg.LogtoEndpoint,
+			ClientID:     cfg.LogtoClientID,
+			ClientSecret: cfg.LogtoClientSecret,
+			RedirectURL:  redirect,
+		})
+		us, err = users.Open(filepath.Join(filepath.Dir(secretPath), "users.db"))
+		if err != nil {
+			return fmt.Errorf("users db: %w", err)
+		}
+		defer us.Close()
+		log.Info("logto login enabled", "redirect", redirect, "max_users", cfg.MaxUsers, "allowlist", len(cfg.SignupAllowlist))
+	}
+
+	srv, err := web.New(cfg, gp, lib, gw, crypt, shareStore, oc, us, log)
 	if err != nil {
 		return fmt.Errorf("web.New: %w", err)
 	}

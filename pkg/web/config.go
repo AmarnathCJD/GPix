@@ -44,6 +44,21 @@ type Config struct {
 	// (e.g. https://photos.example.com), used to build absolute share links and
 	// redirects. Falls back to the request's own host when empty.
 	ServerURL string
+
+	// Logto / OIDC login (optional). Enabled when LogtoEndpoint, LogtoClientID
+	// and LogtoClientSecret are all set. SignupAllowlist (emails or @domains)
+	// limits who may register; MaxUsers caps OIDC registrations (0 = unlimited).
+	LogtoEndpoint     string
+	LogtoClientID     string
+	LogtoClientSecret string
+	LogtoRedirect     string // defaults to ServerURL + /auth/logto/callback
+	SignupAllowlist   []string
+	MaxUsers          int
+}
+
+// LogtoEnabled reports whether OIDC login is configured.
+func (c Config) LogtoEnabled() bool {
+	return c.LogtoEndpoint != "" && c.LogtoClientID != "" && c.LogtoClientSecret != ""
 }
 
 // LoadConfig builds the configuration. Every value can come from environment
@@ -152,7 +167,32 @@ func applyKey(cfg *Config, k, v string) {
 		cfg.EncryptUploads = truthy(v)
 	case "server_url":
 		cfg.ServerURL = strings.TrimRight(v, "/")
+	case "logto_endpoint":
+		cfg.LogtoEndpoint = strings.TrimRight(v, "/")
+	case "logto_client_id":
+		cfg.LogtoClientID = v
+	case "logto_client_secret":
+		cfg.LogtoClientSecret = v
+	case "logto_redirect":
+		cfg.LogtoRedirect = v
+	case "signup_allowlist":
+		cfg.SignupAllowlist = splitList(v)
+	case "max_users":
+		if n, _ := strconv.Atoi(v); n >= 0 {
+			cfg.MaxUsers = n
+		}
 	}
+}
+
+// splitList parses a comma- or space-separated list into trimmed entries.
+func splitList(v string) []string {
+	var out []string
+	for _, p := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // applyEnv overlays GPIX_* environment variables (plus SERVER_URL) onto cfg.
@@ -177,6 +217,12 @@ func applyEnv(cfg *Config) {
 		"webdav_base_path":         "GPIX_WEBDAV_BASE_PATH",
 		"encrypt_uploads":          "GPIX_ENCRYPT_UPLOADS",
 		"server_url":               "GPIX_SERVER_URL",
+		"logto_endpoint":           "GPIX_LOGTO_ENDPOINT",
+		"logto_client_id":          "GPIX_LOGTO_CLIENT_ID",
+		"logto_client_secret":      "GPIX_LOGTO_CLIENT_SECRET",
+		"logto_redirect":           "GPIX_LOGTO_REDIRECT",
+		"signup_allowlist":         "GPIX_SIGNUP_ALLOWLIST",
+		"max_users":                "GPIX_MAX_USERS",
 	}
 	for key, envName := range env {
 		if v, ok := os.LookupEnv(envName); ok {

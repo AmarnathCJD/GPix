@@ -69,6 +69,7 @@ type pageData struct {
 	Title        string
 	Message      string
 	Error        string
+	LogtoEnabled bool
 	Filename     string
 	MediaKey     string
 	IsVideo      bool
@@ -94,8 +95,8 @@ type pageData struct {
 type shareItem struct {
 	Token        string
 	URL          string
-	FileName     string
-	IsVideo      bool
+	Title        string
+	Count        int
 	HasPassword  bool
 	ExpiresLabel string
 	Downloads    int64
@@ -105,12 +106,20 @@ type shareItem struct {
 
 type sharePublicView struct {
 	Token         string
-	FileName      string
-	IsVideo       bool
+	Title         string
 	NeedsPassword bool
 	Expired       bool
 	AllowOriginal bool
 	Error         string
+	Items         []sharePublicItem
+}
+
+type sharePublicItem struct {
+	Index    int
+	Name     string
+	IsVideo  bool
+	ThumbURL string
+	RawURL   string
 }
 
 // gatewaysView models the Connections settings page.

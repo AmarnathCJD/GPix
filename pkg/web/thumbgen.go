@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"image/png"
 	"io"
 	"net/http"
 	"os"
@@ -15,9 +16,8 @@ import (
 	"sync"
 	"time"
 
-	// Register decoders for the formats we can thumbnail in pure Go.
+	// Register the GIF decoder (JPEG and PNG decoders come from their imports above).
 	_ "image/gif"
-	_ "image/png"
 
 	"gpix/pkg/disguise"
 	"gpix/pkg/mediacrypt"
@@ -102,61 +102,109 @@ func (s *Server) openDecrypted(ctx context.Context, mediaKey string) (io.ReadClo
 }
 
 // thumbCachePath returns the on-disk path for a generated thumbnail.
-func (s *Server) thumbCachePath(mediaKey string, size int) string {
+func (s *Server) thumbCachePath(mediaKey string, size int, ext string) string {
 	sum := sha256.Sum256([]byte(mediaKey))
-	return filepath.Join(s.thumbDir, fmt.Sprintf("%s_%d.jpg", hex.EncodeToString(sum[:16]), size))
+	return filepath.Join(s.thumbDir, fmt.Sprintf("%s_%d.%s", hex.EncodeToString(sum[:16]), size, ext))
 }
 
-// serveGeneratedThumb decrypts the original photo, builds a JPEG thumbnail,
-// caches it on disk, and writes it. Returns false if it could not generate one
-// (caller should fall back to the upstream thumbnail).
-func (s *Server) serveGeneratedThumb(w http.ResponseWriter, r *http.Request, mediaKey, name string, size int) bool {
-	if s.thumbDir == "" || !canGenerateThumb(name) {
-		return false
+// thumbKindMeta maps a kind ("photo"|"doc") to its cache extension + MIME type.
+func thumbKindMeta(kind string) (ext, contentType string) {
+	if kind == "doc" {
+		return "png", "image/png"
 	}
-	path := s.thumbCachePath(mediaKey, size)
-	if data, err := os.ReadFile(path); err == nil {
-		writeThumb(w, data)
-		return true
-	}
+	return "jpg", "image/jpeg"
+}
 
-	// Single-flight per cache key so a burst of grid requests generates once.
+// cachedThumbFile returns a previously generated thumbnail from disk, if present.
+func (s *Server) cachedThumbFile(mediaKey string, size int, kind string) ([]byte, string, bool) {
+	if s.thumbDir == "" {
+		return nil, "", false
+	}
+	ext, ct := thumbKindMeta(kind)
+	if data, err := os.ReadFile(s.thumbCachePath(mediaKey, size, ext)); err == nil {
+		return data, ct, true
+	}
+	return nil, "", false
+}
+
+// thumbBytes returns the generated thumbnail for a disguised photo/doc, using
+// the on-disk cache. It decrypts the original, which is why callers must keep it
+// OFF the hot grid path (see queueThumb) — only the single-item view generates
+// synchronously. kind is "photo" (JPEG) or "doc" (PNG).
+func (s *Server) thumbBytes(ctx context.Context, mediaKey, name string, size int, kind string) ([]byte, string, error) {
+	ext, ct := thumbKindMeta(kind)
+	path := s.thumbCachePath(mediaKey, size, ext)
+	if data, err := os.ReadFile(path); err == nil {
+		return data, ct, nil
+	}
 	unlock := s.thumbLock(path)
 	defer unlock()
-	if data, err := os.ReadFile(path); err == nil { // someone generated it while we waited
-		writeThumb(w, data)
-		return true
+	if data, err := os.ReadFile(path); err == nil { // generated while we waited
+		return data, ct, nil
 	}
 
-	ctx, cancel := withTimeout(r.Context(), 90*time.Second)
-	defer cancel()
 	rc, _, err := s.openDecrypted(ctx, mediaKey)
 	if err != nil {
-		s.log.Debug("thumb: open", "key", mediaKey, "err", err)
-		return false
+		return nil, "", err
 	}
 	defer rc.Close()
 
-	img, _, err := image.Decode(io.LimitReader(rc, thumbCacheMaxBytes))
-	if err != nil {
-		s.log.Debug("thumb: decode", "name", name, "err", err)
-		return false
-	}
-	thumb := downscale(img, size)
-
-	var buf []byte
 	bw := &byteWriter{}
-	if err := jpeg.Encode(bw, thumb, &jpeg.Options{Quality: 82}); err != nil {
-		return false
+	if kind == "doc" {
+		content, rerr := io.ReadAll(io.LimitReader(rc, 512<<10)) // first 512 KB
+		if rerr != nil {
+			return nil, "", rerr
+		}
+		width, maxLines := docRenderParams(size)
+		if err := png.Encode(bw, renderDocImage(content, width, maxLines)); err != nil {
+			return nil, "", err
+		}
+	} else {
+		img, _, derr := image.Decode(io.LimitReader(rc, thumbCacheMaxBytes))
+		if derr != nil {
+			return nil, "", derr
+		}
+		if err := jpeg.Encode(bw, downscale(img, size), &jpeg.Options{Quality: 82}); err != nil {
+			return nil, "", err
+		}
 	}
-	buf = bw.b
-	_ = os.WriteFile(path, buf, 0o600) // best-effort cache write
-	writeThumb(w, buf)
-	return true
+	_ = os.WriteFile(path, bw.b, 0o600) // best-effort cache write
+	return bw.b, ct, nil
 }
 
-func writeThumb(w http.ResponseWriter, data []byte) {
-	w.Header().Set("Content-Type", "image/jpeg")
+// queueThumb generates a thumbnail in the background (bounded concurrency) so a
+// grid request never blocks on a decrypt+download. If the worker pool is full it
+// simply skips — the next grid load will try again.
+func (s *Server) queueThumb(mediaKey, name string, size int, kind string) {
+	if s.thumbSem == nil {
+		return
+	}
+	select {
+	case s.thumbSem <- struct{}{}:
+	default:
+		return // at capacity; try again next time
+	}
+	go func() {
+		defer func() { <-s.thumbSem }()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if _, _, err := s.thumbBytes(ctx, mediaKey, name, size, kind); err != nil {
+			s.log.Debug("background thumb", "key", mediaKey, "err", err)
+		}
+	}()
+}
+
+// docRenderParams maps a requested thumbnail size to a render width and line cap:
+// small sizes are grid previews, large sizes are the full-page document view.
+func docRenderParams(size int) (width, maxLines int) {
+	if size >= 1024 {
+		return 1000, 600
+	}
+	return 560, 40
+}
+
+func writeThumb(w http.ResponseWriter, data []byte, contentType string) {
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
 	_, _ = w.Write(data)

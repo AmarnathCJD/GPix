@@ -7,11 +7,12 @@ gpix is a self-hosted Google Photos client written in Go. One binary, several wa
 - **Web UI** — browse, view, stream videos with seek, upload from your browser, delete items. Minimalist black-and-white design, dark/light theme, fully responsive. All assets embedded.
 - **S3-compatible gateway** — point `aws`, `mc`, `boto3`, `rclone`, or any S3 client at your library. AWS Signature V4 auth, keys generated and rotated from the web UI.
 - **WebDAV gateway** — mount your library in Finder, Windows Explorer, or `rclone`. Basic auth with your login password or a revocable app password.
-- **Client-side encryption** — optionally encrypt every upload with a gpix-managed key before it leaves your machine. Google stores only opaque video; no one without your key can see your media.
-- **Password-protected sharing** — create expiring, optionally password-protected public links to individual items, stored in SQLite. Encrypted items are decrypted server-side for the recipient.
+- **Client-side encryption** — optionally encrypt every upload with a gpix-managed key before it leaves your machine. Google stores only opaque video; no one without your key can see your media. Inside gpix, encrypted photos still display as photos (decrypted on the fly, with locally-generated thumbnails).
+- **Password-protected sharing** — create expiring, optionally password-protected public links to a single item or a whole **gallery** of selected items, stored in SQLite. Encrypted items are decrypted server-side for the recipient.
+- **Single sign-on (Logto/OIDC)** — optional Logto login with an email allowlist and a max-users registration cap, alongside the built-in password login.
 - **CLI** — upload files or whole folders from the terminal.
-- **Telegram bot** — `/upload`, `/get`, `/list`, `/info` against your library from any chat.
-- **Universal file storage** — PDFs, archives, executables, any file gets transparently wrapped as a 1-second MP4 with the original bytes preserved. Uploaded as a "video", recovered byte-identical on download. Effectively unlimited cloud storage for arbitrary files.
+- **Telegram bot** — `/upload`, `/get`, `/list`, `/info` against your library from any chat (optional).
+- **Universal file storage** — PDFs, archives, executables, any file gets transparently wrapped as a 1-second MP4 with the original bytes preserved. Uploaded as a "video", recovered byte-identical on download. Text/markdown documents additionally render to a readable **image** in the UI while staying downloadable as the original. Effectively unlimited cloud storage for arbitrary files.
 
 gpix talks the mobile Google Photos protocol directly, which means **uploads count as original quality without consuming your storage quota** (Pixel device profile). Everything else — dedup, video streaming, thumbnails — is wired into the same fast path.
 
@@ -34,6 +35,11 @@ gpix does those.
 ## Quick start
 
 ```bash
+# One-time: fetch the two pure-Go dependencies added for sharing, the
+# listing cache, and document-to-image rendering (all CGO-free).
+go get modernc.org/sqlite golang.org/x/image
+go mod tidy
+
 # Build
 go build .
 
@@ -320,7 +326,7 @@ When you download it:
 2. Finds the magic marker, parses the header, strips the wrapper.
 3. Returns the original `report.pdf` with the right Content-Type and filename.
 
-The UI clearly marks disguised items — they show as file cards with the original extension, not video players.
+The UI marks disguised items by their original extension rather than as video players. **Text and markdown documents** (and source/config/data text files) go a step further: gpix renders their content to a readable monospace **image**, so they appear as a viewable page in the grid and on the view screen (the filename keeps its real extension so you can tell it's a document). The image is generated locally from the decrypted original and cached; **Download** always returns the original file byte-for-byte. (PDFs and other binary documents still show as file cards — rendering those needs a PDF rasteriser that isn't pure-Go.)
 
 **Caveat:** This is obfuscation, not encryption. Anyone with the media key and this format spec can recover the bytes. For real privacy, turn on **encryption** (below), which layers AES-256 on top of the disguise.
 
@@ -354,13 +360,40 @@ Web UI → **Connections** → **Media encryption** → *Turn encryption on*. (O
 
 Create public links to individual items — optionally password-protected and expiring by time or download count. Links are stored in a small SQLite database (`shares.db`, next to `secret.key`). Because decryption happens server-side, you can share an **encrypted** item and the recipient sees the photo without ever touching your key.
 
-**Create:** open any photo → **Share…** → set an optional password, expiry (hours), max downloads, and whether full-resolution download is allowed → **Create share link**. Manage and revoke links under **Shares** in the top nav.
+**Create one:** open any photo → **Share…** → set an optional password, expiry (hours), max downloads, and whether full-resolution download is allowed → **Create share link**.
 
-**Recipient:** opens `https://<your-server>/s/<token>`, enters the password if set, and views/downloads the item. Links honor their expiry and download cap automatically.
+**Create a multi-item share:** in the library grid click **Select**, tick any number of photos/videos/documents, then **Share** → set the same options (plus an optional title). The recipient gets one link to a **gallery** of all the items. Manage and revoke links under **Shares** in the top nav.
+
+**Recipient:** opens `https://<your-server>/s/<token>`, enters the password if set, and views/downloads the item(s) — a single photo, or a thumbnail gallery for multi-item shares. Links honor their expiry and download cap automatically.
 
 Share URLs are built from `server_url` / `SERVER_URL` when set, otherwise from the request host — so set `SERVER_URL` if gpix sits behind a reverse proxy.
 
 > Requires the pure-Go SQLite driver. Run once: `go get modernc.org/sqlite` (then `go mod tidy`). It's CGO-free, so the static Docker build keeps working.
+
+---
+
+## Login & access (Logto SSO)
+
+Alongside the built-in username/password login, gpix can sign you in via **[Logto](https://logto.io)** (or any standards-compliant OIDC provider) using the authorization-code + PKCE flow. The password login keeps working, so this is additive.
+
+**Set up:** in Logto, create a **Traditional Web** application, and set its **Redirect URI** to `<server_url>/auth/logto/callback`. Then configure gpix:
+
+```env
+GPIX_LOGTO_ENDPOINT=https://your-tenant.logto.app
+GPIX_LOGTO_CLIENT_ID=...
+GPIX_LOGTO_CLIENT_SECRET=...
+SERVER_URL=https://photos.example.com           # used to build the callback URL
+GPIX_SIGNUP_ALLOWLIST=you@example.com,@example.com   # optional
+GPIX_MAX_USERS=5                                 # optional
+```
+
+A **"Sign in with Logto"** button then appears on the login page.
+
+- **Allowlist** — `signup_allowlist` is a comma-separated list of exact emails (`a@b.com`) and/or domains (`@b.com`). On a user's *first* sign-in, their email must match (empty list = anyone Logto authenticates). Already-registered users always pass.
+- **Max users** — `max_users` caps how many people can register through OIDC; once reached, new sign-ins are rejected with "registration is closed". `0` = unlimited.
+- Registered identities are stored in `users.db` (next to `secret.key`). Sessions are the same signed cookies as password login, so nothing else in the app changes.
+
+> gpix is single-tenant: everyone who signs in shares the same Google Photos library. Logto here controls **who may use this gpix**, not separate per-user libraries.
 
 ---
 
@@ -383,16 +416,17 @@ It's also backed by a **SQLite snapshot** (`cache.db`, via `pkg/cachedb`): on st
 ## Build for Linux
 
 ```bash
+go get modernc.org/sqlite golang.org/x/image && go mod tidy   # one-time
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o gpix .
 ```
 
-Fully static, ~25 MB stripped. Drop the binary on any Linux box with `.env` and `gpix-web.conf` next to it.
+Fully static (the SQLite and image deps are pure-Go), ~25 MB stripped. Drop the binary on any Linux box with `.env` (or `gpix-web.conf`) next to it; gpix creates its state files (`secret.key`, `gateways.json`, `encryption.key`, `shares.db`, `cache.db`, `users.db`, `gpix-thumbcache/`) on first run.
 
 ---
 
 ## Docker
 
-A multi-stage `Dockerfile` builds a static binary into a minimal Alpine image (web assets are embedded, so only CA certs are added). All runtime state — `gpix-web.conf`, `.env`, `secret.key`, `gateways.json` — lives in `/data`, which you mount.
+A multi-stage `Dockerfile` builds a static binary into a minimal Alpine image (web assets are embedded, so only CA certs are added). All runtime config and state — `gpix-web.conf`/`.env`, plus the generated `secret.key`, `gateways.json`, `encryption.key`, `shares.db`, `cache.db`, `users.db`, and `gpix-thumbcache/` — live in `/data`, which you mount.
 
 ```bash
 # Put your config and auth in ./data first:
@@ -415,7 +449,8 @@ Or with Compose (`docker compose up -d` — see `docker-compose.yml`). The image
 - **Your photos stay in your Google account.** If you stop using gpix tomorrow, everything is still there in the regular Google Photos app/web.
 - **No third party.** The binary talks directly to Google. No relay servers, no analytics, no telemetry.
 - **Auth tokens stay local.** `GP_AUTH_DATA` lives in `.env` on your machine and never leaves it except to authenticate to Google.
-- **Web UI is single-user.** The default config binds `0.0.0.0` (all interfaces) for convenience. Switch to `127.0.0.1` to keep it local, or put it behind a reverse proxy with TLS for remote access. The S3 and WebDAV gateways follow the same rule — see the network-exposure note above.
+- **Single shared library.** gpix is single-tenant: the password login (and any Logto users you allow) all share the same Google Photos backend. Logto's allowlist + max-users control *who may sign in*, not separate per-user libraries.
+- **Binds `0.0.0.0` by default** (all interfaces) for convenience. Switch to `127.0.0.1` to keep it local, or put it behind a reverse proxy with TLS for remote access. The S3 and WebDAV gateways follow the same rule — see the network-exposure note above.
 
 ---
 
