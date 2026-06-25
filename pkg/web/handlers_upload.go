@@ -11,6 +11,7 @@ import (
 
 	"gpix/pkg/disguise"
 	"gpix/pkg/gpmc"
+	"gpix/pkg/mediacrypt"
 )
 
 const maxUploadBytes = 5 << 30
@@ -106,7 +107,31 @@ func (s *Server) uploadOne(r *http.Request, src io.Reader, name string, quality 
 	displayName := name
 	commitName := name
 	wasDisguised := false
-	if head, err := readHead(tmpPath, 512); err == nil && disguise.ShouldWrap("", name, head) {
+	wasEncrypted := false
+
+	if s.crypt != nil && s.crypt.Enabled() {
+		// Encrypt the original bytes, then disguise the ciphertext as MP4 so
+		// Google Photos accepts it. Google never sees the real media.
+		st, serr := os.Stat(tmpPath)
+		if serr != nil {
+			return name + "\tstat: " + serr.Error()
+		}
+		s.progressBus.Publish(uploadID, "encrypting "+name+"…")
+		encPath, err := encryptToTemp(s.cfg.TempDir, tmpPath, name, st.Size(), s.crypt)
+		if err != nil {
+			return name + "\tencrypt: " + err.Error()
+		}
+		defer os.Remove(encPath)
+		wrappedPath, err := wrapToTemp(s.cfg.TempDir, encPath, name)
+		if err != nil {
+			return name + "\twrap: " + err.Error()
+		}
+		defer os.Remove(wrappedPath)
+		uploadPath = wrappedPath
+		commitName = name + ".mp4"
+		wasDisguised = true
+		wasEncrypted = true
+	} else if head, err := readHead(tmpPath, 512); err == nil && disguise.ShouldWrap("", name, head) {
 		wrappedPath, err := wrapToTemp(s.cfg.TempDir, tmpPath, name)
 		if err != nil {
 			return name + "\twrap: " + err.Error()
@@ -129,6 +154,9 @@ func (s *Server) uploadOne(r *http.Request, src io.Reader, name string, quality 
 	if wasDisguised {
 		marker = "uploaded (disguised)"
 	}
+	if wasEncrypted {
+		marker = "uploaded (encrypted)"
+	}
 	if res.Skipped {
 		marker = "already in library"
 	}
@@ -150,6 +178,24 @@ func readHead(path string, n int) ([]byte, error) {
 		return nil, err
 	}
 	return buf[:read], nil
+}
+
+func encryptToTemp(tempDir, srcPath, name string, size int64, crypt *mediacrypt.Manager) (string, error) {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+	out, err := os.CreateTemp(tempDir, "gpix-enc-*")
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	if err := crypt.Encrypt(out, src, size, name); err != nil {
+		os.Remove(out.Name())
+		return "", err
+	}
+	return out.Name(), nil
 }
 
 func wrapToTemp(tempDir, srcPath, name string) (string, error) {

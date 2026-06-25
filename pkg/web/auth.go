@@ -28,12 +28,12 @@ func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.render(w, "login", pageData{})
+	s.render(w, "login", pageData{LogtoEnabled: s.cfg.LogtoEnabled()})
 }
 
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.render(w, "login", pageData{Error: "bad form"})
+		s.render(w, "login", pageData{Error: "bad form", LogtoEnabled: s.cfg.LogtoEnabled()})
 		return
 	}
 	u := r.FormValue("u")
@@ -42,12 +42,12 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	dampDelay := 300 * time.Millisecond
 	if u != s.cfg.Username {
 		time.Sleep(dampDelay)
-		s.render(w, "login", pageData{Error: "invalid credentials"})
+		s.render(w, "login", pageData{Error: "invalid credentials", LogtoEnabled: s.cfg.LogtoEnabled()})
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(s.cfg.PasswordHash), []byte(p)); err != nil {
 		time.Sleep(dampDelay)
-		s.render(w, "login", pageData{Error: "invalid credentials"})
+		s.render(w, "login", pageData{Error: "invalid credentials", LogtoEnabled: s.cfg.LogtoEnabled()})
 		return
 	}
 

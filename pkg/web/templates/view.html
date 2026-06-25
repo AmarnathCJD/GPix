@@ -1,7 +1,16 @@
 {{define "view"}}{{template "layout" .}}{{end}}
 {{define "title"}}{{.Filename}} · gpix{{end}}
 {{define "bodyclass"}}page-view{{end}}
-{{define "head"}}{{if .IsVideo}}<link rel="stylesheet" href="/static/plyr.css">{{end}}{{end}}
+{{define "head"}}{{if and (eq .MediaClass "video") (not .Encrypted)}}<link rel="stylesheet" href="/static/plyr.css">{{end}}
+<style>
+  .encrypted-video{max-width:100%;width:100%;border-radius:10px;background:#000}
+  .doc-image{max-width:100%;height:auto;border-radius:8px;border:1px solid var(--border,#3333);background:#fff}
+  .share-box{margin-top:.75rem}
+  .share-box>summary{list-style:none;display:inline-flex;align-items:center;gap:.5rem;width:100%;justify-content:center}
+  .share-box>summary::-webkit-details-marker{display:none}
+  .share-form{display:flex;flex-direction:column;gap:.6rem;margin-top:.75rem;padding:.9rem;border:1px solid var(--border,#3333);border-radius:12px}
+  .share-form .field{display:flex;flex-direction:column;gap:.25rem;font-size:.82rem}
+</style>{{end}}
 {{define "content"}}
 <a class="back-link" href="/browse">
   <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
@@ -10,7 +19,7 @@
 <div class="detail-layout">
   <div class="media-column">
     <section class="media-stage" aria-label="Media preview">
-      {{if .IsDisguised}}
+      {{if eq .MediaClass "file"}}
       <div class="file-stage">
         <div class="file-stage-icon">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
@@ -20,19 +29,25 @@
         <p class="file-stage-kind">{{.DisplayKind}}</p>
         <p class="file-stage-note">Stored disguised as a video. Download to recover the original file.</p>
       </div>
-      {{else if .IsVideo}}
-      <div class="player-shell"><video id="player" controls playsinline preload="metadata"></video></div>
-      {{if .HasQualities}}
-      <div class="quality-bar">
-        <span class="quality-bar-label">Quality</span>
-        <div class="quality-chips" id="quality-chips" role="group" aria-label="Playback quality">
-          <button class="quality-chip active" type="button" data-level="-1" aria-pressed="true">Auto</button>
-          {{range .Qualities}}<button class="quality-chip" type="button" data-level="{{.Index}}" aria-pressed="false">{{.Label}}</button>{{end}}
+      {{else if eq .MediaClass "doc"}}
+      <img class="doc-image" src="/thumb/{{.MediaKey}}?size=2048" alt="{{.Filename}}">
+      {{else if eq .MediaClass "video"}}
+        {{if .Encrypted}}
+        <video class="encrypted-video" controls playsinline preload="metadata" src="/raw/{{.RawToken}}?inline=1"></video>
+        {{else}}
+        <div class="player-shell"><video id="player" controls playsinline preload="metadata"></video></div>
+        {{if .HasQualities}}
+        <div class="quality-bar">
+          <span class="quality-bar-label">Quality</span>
+          <div class="quality-chips" id="quality-chips" role="group" aria-label="Playback quality">
+            <button class="quality-chip active" type="button" data-level="-1" aria-pressed="true">Auto</button>
+            {{range .Qualities}}<button class="quality-chip" type="button" data-level="{{.Index}}" aria-pressed="false">{{.Label}}</button>{{end}}
+          </div>
         </div>
-      </div>
-      {{end}}
+        {{end}}
+        {{end}}
       {{else}}
-      <img src="/raw/{{.RawToken}}" alt="{{.Filename}}">
+      <img src="/raw/{{.RawToken}}?inline=1" alt="{{.Filename}}">
       {{end}}
     </section>
     <section class="file-details" aria-labelledby="file-details-title">
@@ -72,7 +87,29 @@
         Delete
       </button>
     </div>
-    {{if and .IsVideo (not .IsDisguised)}}
+    <details class="share-box">
+      <summary class="btn btn-large">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="15.4" y1="6.5" x2="8.6" y2="10.5"/></svg>
+        Share…
+      </summary>
+      <form class="share-form" method="POST" action="/share/create">
+        <input type="hidden" name="_csrf" value="{{.CSRF}}">
+        <input type="hidden" name="key" value="{{.MediaKey}}">
+        <input type="hidden" name="filename" value="{{if .IsDisguised}}{{.OriginalName}}{{else}}{{.Filename}}{{end}}">
+        <input type="hidden" name="is_video" value="{{if .IsVideo}}1{{else}}0{{end}}">
+        <label class="field"><span>Password (optional)</span><input class="input" type="text" name="password" autocomplete="off" placeholder="No password"></label>
+        <label class="field"><span>Expires in hours (optional)</span><input class="input" type="number" name="expiry_hours" min="1" placeholder="Never"></label>
+        <label class="field"><span>Max downloads (optional)</span><input class="input" type="number" name="max_downloads" min="1" placeholder="Unlimited"></label>
+        <label class="field"><span>Access</span>
+          <select class="input" name="allow_original">
+            <option value="1">Allow full-resolution download</option>
+            <option value="0">View only</option>
+          </select>
+        </label>
+        <button class="btn btn-primary" type="submit">Create share link</button>
+      </form>
+    </details>
+    {{if and (eq .MediaClass "video") (not .Encrypted)}}
     <section class="stream-section">
       <div class="section-heading">
         <h2>Stream URLs</h2>
@@ -102,7 +139,7 @@
 </div>
 {{end}}
 {{define "scripts"}}
-{{if and .IsVideo (not .IsDisguised)}}
+{{if and (eq .MediaClass "video") (not .Encrypted)}}
 <script src="/static/hls.min.js"></script>
 <script src="/static/plyr.min.js"></script>
 <script>

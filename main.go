@@ -19,11 +19,17 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"gpix/pkg/bridge"
+	"gpix/pkg/cachedb"
 	"gpix/pkg/dav"
 	"gpix/pkg/gpmc"
 	"gpix/pkg/gwcreds"
+	"gpix/pkg/library"
+	"gpix/pkg/mediacrypt"
+	"gpix/pkg/oidc"
 	"gpix/pkg/s3"
+	"gpix/pkg/share"
 	"gpix/pkg/store/gpmcstore"
+	"gpix/pkg/users"
 	"gpix/pkg/web"
 )
 
@@ -96,13 +102,19 @@ func runAll(ctx context.Context, log *slog.Logger, auth, cfgPath, secretPath, pr
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := startBot(ctx, log.With("service", "bot"), auth, profileFlag); err != nil {
-			errs <- fmt.Errorf("bot: %w", err)
-		}
-	}()
+	// The Telegram bot is optional: only start it when it's configured. Without
+	// TG_BOT_TOKEN, `-mode all` just runs the web + gateways.
+	if os.Getenv("TG_BOT_TOKEN") != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := startBot(ctx, log.With("service", "bot"), auth, profileFlag); err != nil {
+				errs <- fmt.Errorf("bot: %w", err)
+			}
+		}()
+	} else {
+		log.Info("telegram bot disabled (set TG_BOT_TOKEN to enable)")
+	}
 
 	wg.Add(1)
 	go func() {
@@ -176,7 +188,14 @@ func startWeb(ctx context.Context, log *slog.Logger, auth, cfgPath, secretPath, 
 	}
 
 	if secretPath == "" {
-		secretPath = filepath.Join(filepath.Dir(cfgPath), "secret.key")
+		dir := cfg.DataDir
+		if dir == "" {
+			dir = filepath.Dir(cfgPath)
+		}
+		if dir != "" && dir != "." {
+			_ = os.MkdirAll(dir, 0o700)
+		}
+		secretPath = filepath.Join(dir, "secret.key")
 	}
 	secret, err := web.LoadOrCreateSecret(secretPath)
 	if err != nil {
@@ -195,6 +214,20 @@ func startWeb(ctx context.Context, log *slog.Logger, auth, cfgPath, secretPath, 
 		return fmt.Errorf("seed gateway credentials: %w", err)
 	}
 
+	// Media-encryption manager: master key + "encrypt new uploads" toggle, also
+	// stored next to secret.key.
+	encKeyPath := filepath.Join(filepath.Dir(secretPath), "encryption.key")
+	encStatePath := filepath.Join(filepath.Dir(secretPath), "encryption.json")
+	crypt, err := mediacrypt.Load(encKeyPath, encStatePath)
+	if err != nil {
+		return fmt.Errorf("encryption: %w", err)
+	}
+	if _, statErr := os.Stat(encStatePath); os.IsNotExist(statErr) && cfg.EncryptUploads {
+		if err := crypt.SetEnabled(true); err != nil {
+			return fmt.Errorf("seed encryption toggle: %w", err)
+		}
+	}
+
 	profileName := coalesce(profileFlag, cfg.DeviceProfile, "pixel-xl")
 	profile, err := parseProfile(profileName)
 	if err != nil {
@@ -206,7 +239,54 @@ func startWeb(ctx context.Context, log *slog.Logger, auth, cfgPath, secretPath, 
 		return fmt.Errorf("gpmc.New: %w", err)
 	}
 
-	srv, err := web.New(cfg, gp, gw, log)
+	// Shared, background-refreshed listing cache, backed by a SQLite snapshot so
+	// S3 ListObjects / WebDAV PROPFIND return filenames instantly on startup
+	// (stale-while-revalidate) instead of re-walking the whole Google Photos
+	// library each request.
+	cacheStore, err := cachedb.Open(filepath.Join(filepath.Dir(secretPath), "cache.db"))
+	if err != nil {
+		return fmt.Errorf("cache db: %w", err)
+	}
+	defer cacheStore.Close()
+	lib := library.New(gp, 0, cacheStore)
+	lib.Start(ctx, 0)
+
+	// SQLite-backed share links, stored next to secret.key.
+	sharePath := filepath.Join(filepath.Dir(secretPath), "shares.db")
+	shareStore, err := share.Open(sharePath)
+	if err != nil {
+		return fmt.Errorf("share store: %w", err)
+	}
+	defer shareStore.Close()
+
+	// Optional Logto / OIDC login with email allowlist + max-users cap.
+	var (
+		oc *oidc.Client
+		us *users.Store
+	)
+	if cfg.LogtoEnabled() {
+		redirect := cfg.LogtoRedirect
+		if redirect == "" {
+			if cfg.ServerURL == "" {
+				return fmt.Errorf("logto: set server_url (or logto_redirect) so the OAuth callback URL is known")
+			}
+			redirect = cfg.ServerURL + "/auth/logto/callback"
+		}
+		oc = oidc.New(oidc.Config{
+			Issuer:       cfg.LogtoEndpoint,
+			ClientID:     cfg.LogtoClientID,
+			ClientSecret: cfg.LogtoClientSecret,
+			RedirectURL:  redirect,
+		})
+		us, err = users.Open(filepath.Join(filepath.Dir(secretPath), "users.db"))
+		if err != nil {
+			return fmt.Errorf("users db: %w", err)
+		}
+		defer us.Close()
+		log.Info("logto login enabled", "redirect", redirect, "max_users", cfg.MaxUsers, "allowlist", len(cfg.SignupAllowlist))
+	}
+
+	srv, err := web.New(cfg, gp, lib, gw, crypt, shareStore, oc, us, log)
 	if err != nil {
 		return fmt.Errorf("web.New: %w", err)
 	}
@@ -218,8 +298,10 @@ func startWeb(ctx context.Context, log *slog.Logger, auth, cfgPath, secretPath, 
 		"secret_path", secretPath,
 	)
 
-	// All gateways share one Google-Photos-backed object store.
-	be := gpmcstore.New(gp, gpmcstore.Options{TempDir: cfg.TempDir})
+	// All gateways share one Google-Photos-backed object store (with the same
+	// encryption manager as the web UI, so encrypted items round-trip on every
+	// surface).
+	be := gpmcstore.New(gp, gpmcstore.Options{TempDir: cfg.TempDir, Crypt: crypt, Library: lib})
 
 	runners := []func(context.Context) error{srv.Run}
 

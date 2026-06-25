@@ -1,0 +1,58 @@
+{{define "share_public"}}{{template "layout" .}}{{end}}
+{{define "title"}}Shared · gpix{{end}}
+{{define "bodyclass"}}page-share-public{{end}}
+{{define "head"}}
+<style>
+  .sp-wrap{max-width:1100px;margin:2.5rem auto;padding:0 1rem}
+  .sp-card{padding:1.5rem;border:1px solid var(--border,#3333);border-radius:14px;text-align:center;max-width:420px;margin:0 auto}
+  .sp-pw{max-width:340px;margin:1rem auto 0;display:flex;flex-direction:column;gap:.7rem}
+  .sp-muted{opacity:.7;font-size:.9rem}
+  .sp-head{text-align:center;margin-bottom:1.5rem}
+  .sp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.9rem}
+  .sp-item{display:block;border:1px solid var(--border,#3333);border-radius:12px;overflow:hidden;background:var(--surface-2,#0001);text-decoration:none;color:inherit}
+  .sp-thumb{position:relative;aspect-ratio:1/1;background:#111}
+  .sp-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .sp-vid{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;opacity:.85}
+  .sp-name{padding:.5rem .6rem;font-size:.78rem;word-break:break-all}
+  .sp-dl{display:inline-block;margin-top:.3rem;font-size:.74rem;opacity:.75}
+</style>
+{{end}}
+{{define "content"}}
+{{with .SharePublic}}
+<div class="sp-wrap">
+{{if .Expired}}
+  <div class="sp-card">
+    <h1>Link unavailable</h1>
+    <p class="sp-muted">{{if .Error}}{{.Error}}{{else}}This share has expired or reached its download limit.{{end}}</p>
+  </div>
+{{else if .NeedsPassword}}
+  <div class="sp-card">
+    <h1>Password required</h1>
+    <p class="sp-muted">This share is protected.</p>
+    {{if .Error}}<p class="sp-muted" style="color:#c33">{{.Error}}</p>{{end}}
+    <form class="sp-pw" method="POST" action="/s/{{.Token}}">
+      <input class="input" type="password" name="password" placeholder="Password" autofocus required>
+      <button class="btn btn-primary" type="submit">View</button>
+    </form>
+  </div>
+{{else}}
+  <div class="sp-head">
+    <h1>{{if .Title}}{{.Title}}{{else}}Shared media{{end}}</h1>
+    <p class="sp-muted">{{len .Items}} item{{if ne (len .Items) 1}}s{{end}}</p>
+  </div>
+  <div class="sp-grid">
+    {{range .Items}}
+    <a class="sp-item" href="{{.RawURL}}?inline=1" target="_blank" rel="noopener">
+      <div class="sp-thumb">
+        <img loading="lazy" src="{{.ThumbURL}}?size=512" alt="{{.Name}}">
+        {{if .IsVideo}}<span class="sp-vid"><svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg></span>{{end}}
+      </div>
+      <div class="sp-name">{{.Name}}{{if $.SharePublic.AllowOriginal}}<br><span class="sp-dl">Open / download ↗</span>{{end}}</div>
+    </a>
+    {{end}}
+  </div>
+{{end}}
+  <p class="sp-muted" style="text-align:center;margin-top:1.5rem">Shared with gpix</p>
+</div>
+{{end}}
+{{end}}

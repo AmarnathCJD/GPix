@@ -27,3 +27,17 @@ stream_token_ttl_minutes = 60
 # revocable app password you generate on the Connections page.
 # webdav_listen = 0.0.0.0:8081
 # webdav_base_path = /
+
+# ---- External URL (optional) ----
+# Externally-reachable base URL, used to build share links and redirects. Also
+# settable via the SERVER_URL environment variable (which wins). When empty,
+# gpix derives links from the incoming request host.
+# server_url = https://photos.example.com
+
+# ---- Media encryption (optional) ----
+# Seeds the "encrypt new uploads" toggle on first run only; after that, the
+# Connections page in the web UI controls it. When on, every upload is encrypted
+# with a gpix-managed key (encryption.key, created next to secret.key) before
+# being disguised and sent to Google — so only you can see your media. BACK UP
+# encryption.key; losing it makes encrypted items permanently unreadable.
+# encrypt_uploads = false

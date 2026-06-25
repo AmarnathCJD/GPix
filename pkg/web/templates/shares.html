@@ -1,0 +1,70 @@
+{{define "shares"}}{{template "layout" .}}{{end}}
+{{define "title"}}Shares · gpix{{end}}
+{{define "bodyclass"}}page-shares{{end}}
+{{define "head"}}
+<style>
+  .sh-table{width:100%;border-collapse:collapse;font-size:.9rem}
+  .sh-table th,.sh-table td{text-align:left;padding:.6rem .5rem;border-bottom:1px solid var(--border,#3333);vertical-align:top}
+  .sh-url{display:flex;gap:.4rem;align-items:center}
+  .sh-url input{flex:1 1 18rem;font-family:ui-monospace,Menlo,monospace;font-size:.78rem}
+  .sh-badge{font-size:.72rem;padding:.1rem .45rem;border-radius:999px;border:1px solid var(--border,#3334);opacity:.85}
+  .sh-empty{opacity:.7;padding:2rem 0}
+  .copied{outline:2px solid #0a7 !important}
+</style>
+{{end}}
+{{define "content"}}
+<section class="page-heading">
+  <div>
+    <span class="eyebrow">Settings</span>
+    <h1>Shares</h1>
+    <p>Public links to individual items. Each can be password-protected and set to expire by time or download count. Create one from any photo's page using the <strong>Share</strong> button.</p>
+  </div>
+</section>
+
+<section class="panel">
+{{if .Shares}}
+  <table class="sh-table">
+    <thead><tr><th>Share</th><th>Link</th><th>Protection</th><th>Downloads</th><th></th></tr></thead>
+    <tbody>
+    {{range .Shares}}
+      <tr>
+        <td>{{.Title}}{{if gt .Count 1}} <span class="sh-badge">{{.Count}} items</span>{{end}}</td>
+        <td>
+          <div class="sh-url">
+            <input class="input" readonly value="{{.URL}}">
+            <button class="btn" type="button" data-copy>Copy</button>
+          </div>
+        </td>
+        <td>
+          {{if .HasPassword}}<span class="sh-badge">password</span> {{end}}
+          <span class="sh-badge">{{.ExpiresLabel}}</span>
+        </td>
+        <td>{{.Downloads}}{{if gt .MaxDownloads 0}} / {{.MaxDownloads}}{{end}}</td>
+        <td>
+          <form method="POST" action="/share/revoke/{{.Token}}" onsubmit="return confirm('Revoke this share link?')">
+            <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+            <button class="btn" type="submit">Revoke</button>
+          </form>
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+{{else}}
+  <p class="sh-empty">No share links yet. Open a photo and click <strong>Share</strong> to create one.</p>
+{{end}}
+</section>
+{{end}}
+{{define "scripts"}}
+<script>
+document.querySelectorAll('[data-copy]').forEach(function(btn){
+  btn.addEventListener('click',function(){
+    var input=btn.parentElement.querySelector('.input');
+    if(!input)return;
+    input.select();input.setSelectionRange(0,input.value.length);
+    var done=function(){btn.classList.add('copied');setTimeout(function(){btn.classList.remove('copied');},700);};
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(input.value).then(done,done);}else{document.execCommand('copy');done();}
+  });
+});
+</script>
+{{end}}
